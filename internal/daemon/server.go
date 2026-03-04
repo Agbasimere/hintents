@@ -1,32 +1,24 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package daemon
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/dotandev/hintents/internal/errors"
 	"github.com/dotandev/hintents/internal/logger"
 	stellarrpc "github.com/dotandev/hintents/internal/rpc"
 	"github.com/dotandev/hintents/internal/simulator"
 	"github.com/dotandev/hintents/internal/telemetry"
 	"github.com/gorilla/rpc/v2"
 	"github.com/gorilla/rpc/v2/json2"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -69,18 +61,37 @@ type GetTraceResponse struct {
 	Traces []map[string]interface{} `json:"traces"`
 }
 
+// GetContractCodeRequest represents the get_contract_code RPC request
+type GetContractCodeRequest struct {
+	ContractID string `json:"contract_id"`
+	TxHash     string `json:"tx_hash"`
+}
+
+// GetContractCodeResponse represents the get_contract_code RPC response
+type GetContractCodeResponse struct {
+	ContractID string `json:"contract_id"`
+	WasmHash   string `json:"wasm_hash"`
+	Wasm       string `json:"wasm"`
+}
+
 // NewServer creates a new JSON-RPC server
 func NewServer(config Config) (*Server, error) {
-	var client *stellarrpc.Client
+	opts := []stellarrpc.ClientOption{
+		stellarrpc.WithNetwork(stellarrpc.Network(config.Network)),
+	}
+
 	if config.RPCURL != "" {
-		client = stellarrpc.NewClientWithURL(config.RPCURL, stellarrpc.Network(config.Network), "")
-	} else {
-		client = stellarrpc.NewClient(stellarrpc.Network(config.Network), "")
+		opts = append(opts, stellarrpc.WithHorizonURL(config.RPCURL))
+	}
+
+	client, err := stellarrpc.NewClient(opts...)
+	if err != nil {
+		return nil, errors.WrapValidationError(fmt.Sprintf("failed to create RPC client: %v", err))
 	}
 
 	sim, err := simulator.NewRunner("", false)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create simulator: %w", err)
+		return nil, errors.WrapSimulatorNotFound(err.Error())
 	}
 
 	return &Server{
@@ -113,7 +124,7 @@ func (s *Server) authenticate(r *http.Request) bool {
 // DebugTransaction handles debug_transaction RPC calls
 func (s *Server) DebugTransaction(r *http.Request, req *DebugTransactionRequest, resp *DebugTransactionResponse) error {
 	if !s.authenticate(r) {
-		return fmt.Errorf("unauthorized")
+		return errors.WrapUnauthorized("")
 	}
 
 	ctx := r.Context()
@@ -128,7 +139,7 @@ func (s *Server) DebugTransaction(r *http.Request, req *DebugTransactionRequest,
 	txResp, err := s.rpcClient.GetTransaction(ctx, req.Hash)
 	if err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("failed to fetch transaction: %w", err)
+		return errors.WrapRPCConnectionFailed(err)
 	}
 
 	*resp = DebugTransactionResponse{
@@ -144,7 +155,7 @@ func (s *Server) DebugTransaction(r *http.Request, req *DebugTransactionRequest,
 // GetTrace handles get_trace RPC calls
 func (s *Server) GetTrace(r *http.Request, req *GetTraceRequest, resp *GetTraceResponse) error {
 	if !s.authenticate(r) {
-		return fmt.Errorf("unauthorized")
+		return errors.WrapUnauthorized("")
 	}
 
 	ctx := r.Context()
@@ -172,6 +183,38 @@ func (s *Server) GetTrace(r *http.Request, req *GetTraceRequest, resp *GetTraceR
 	return nil
 }
 
+// GetContractCode handles get_contract_code RPC calls to fetch historical WASM bytecode
+func (s *Server) GetContractCode(r *http.Request, req *GetContractCodeRequest, resp *GetContractCodeResponse) error {
+	if !s.authenticate(r) {
+		return errors.WrapUnauthorized("")
+	}
+
+	ctx := r.Context()
+	tracer := telemetry.GetTracer()
+	ctx, span := tracer.Start(ctx, "rpc_get_contract_code")
+	span.SetAttributes(
+		attribute.String("contract.id", req.ContractID),
+		attribute.String("transaction.hash", req.TxHash),
+	)
+	defer span.End()
+
+	logger.Logger.Info("Processing get_contract_code RPC", "contract_id", req.ContractID, "tx_hash", req.TxHash)
+
+	wasmBytes, wasmHash, err := stellarrpc.FetchHistoricalContractBytecode(ctx, s.rpcClient, req.ContractID, req.TxHash)
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("fetch historical bytecode: %w", err)
+	}
+
+	*resp = GetContractCodeResponse{
+		ContractID: req.ContractID,
+		WasmHash:   wasmHash,
+		Wasm:       base64.StdEncoding.EncodeToString(wasmBytes),
+	}
+
+	return nil
+}
+
 // Start starts the JSON-RPC server
 func (s *Server) Start(ctx context.Context, port string) error {
 	server := rpc.NewServer()
@@ -179,7 +222,7 @@ func (s *Server) Start(ctx context.Context, port string) error {
 	server.RegisterCodec(json2.NewCodec(), "application/json;charset=UTF-8")
 
 	if err := server.RegisterService(s, ""); err != nil {
-		return fmt.Errorf("failed to register service: %w", err)
+		return errors.WrapValidationError(fmt.Sprintf("failed to register service: %v", err))
 	}
 
 	http.Handle("/rpc", server)
@@ -189,6 +232,9 @@ func (s *Server) Start(ctx context.Context, port string) error {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
+
+	// Prometheus metrics endpoint
+	http.Handle("/metrics", promhttp.Handler())
 
 	logger.Logger.Info("Starting JSON-RPC server", "port", port)
 

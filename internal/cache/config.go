@@ -1,16 +1,5 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package cache
 
@@ -60,7 +49,7 @@ func LoadConfig() (GlobalConfig, error) {
 	}
 
 	// If config file doesn't exist, return default config
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+	if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
 		logger.Logger.Debug("Config file does not exist, using defaults")
 		return DefaultGlobalConfig(), nil
 	}
@@ -73,7 +62,7 @@ func LoadConfig() (GlobalConfig, error) {
 	}
 
 	var config GlobalConfig
-	if err := json.Unmarshal(data, &config); err != nil {
+	if err = json.Unmarshal(data, &config); err != nil {
 		logger.Logger.Warn("Failed to parse config file, using defaults", "error", err)
 		return DefaultGlobalConfig(), nil
 	}
@@ -90,7 +79,7 @@ func SaveConfig(config GlobalConfig) error {
 
 	// Create directory if it doesn't exist
 	configDir := filepath.Dir(configPath)
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	if err = os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -101,7 +90,7 @@ func SaveConfig(config GlobalConfig) error {
 	}
 
 	// Write to file
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
+	if err = os.WriteFile(configPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 

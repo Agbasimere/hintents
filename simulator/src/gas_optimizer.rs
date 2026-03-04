@@ -4,6 +4,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// Stellar/Soroban budget limits
+pub const CPU_LIMIT: u64 = 100_000_000; // 100M instructions
+pub const MEMORY_LIMIT: u64 = 50_000_000; // 50M bytes
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BudgetMetrics {
     pub cpu_instructions: u64,
@@ -59,8 +63,8 @@ impl GasOptimizationAdvisor {
             0
         };
 
-        let cpu_percentage = (metrics.cpu_instructions as f64 / 100_000_000.0) * 100.0;
-        let memory_percentage = (metrics.memory_bytes as f64 / 50_000_000.0) * 100.0;
+        let cpu_percentage = (metrics.cpu_instructions as f64 / CPU_LIMIT as f64) * 100.0;
+        let memory_percentage = (metrics.memory_bytes as f64 / MEMORY_LIMIT as f64) * 100.0;
 
         budget_breakdown.insert("cpu_usage_percent".to_string(), cpu_percentage);
         budget_breakdown.insert("memory_usage_percent".to_string(), memory_percentage);
@@ -76,7 +80,7 @@ impl GasOptimizationAdvisor {
                     "CPU consumption is {}x higher than baseline. Consider optimizing loops and reducing computational complexity.",
                     cpu_per_op / self.baseline_cpu_per_op
                 ),
-                estimated_savings: format!("~{}% reduction possible", 
+                estimated_savings: format!("~{}% reduction possible",
                     ((cpu_per_op - self.baseline_cpu_per_op) as f64 / cpu_per_op as f64 * 100.0) as u32),
                 code_location: Some("Loop operations".to_string()),
             });

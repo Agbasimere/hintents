@@ -27,6 +27,7 @@ simulator/check_output.txt
 # --- Go specific ---
 /vendor/
 coverage.out
+coverage/
 
 # --- Rust specific ---
 **/*.rs.bk
@@ -48,3 +49,14 @@ out
 # !README.md
 # !CONTRIBUTING.md
 # !CHANGELOG.md
+lishus-t.md
+lishus.md
+PR_30*
+commit_309*.next
+*.py
+*.json
+!package.json
+!package-lock.json
+!tsconfig*.json
+
+.gocache

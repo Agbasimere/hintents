@@ -1,21 +1,12 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package simulator
 
 import (
 	"fmt"
+
+	"github.com/dotandev/hintents/internal/errors"
 )
 
 // SimulationRequestBuilder provides a fluent interface for building SimulationRequest objects.
@@ -29,10 +20,12 @@ import (
 //		WithLedgerEntry("key1", "value1").
 //		Build()
 type SimulationRequestBuilder struct {
-	envelopeXdr   string
-	resultMetaXdr string
-	ledgerEntries map[string]string
-	errors        []string
+	envelopeXdr     string
+	resultMetaXdr   string
+	ledgerEntries   map[string]string
+	restorePreamble map[string]interface{}
+	mockBaseFee     *uint32
+	errors          []string
 }
 
 // NewSimulationRequestBuilder creates a new builder instance.
@@ -96,21 +89,33 @@ func (b *SimulationRequestBuilder) WithLedgerEntries(entries map[string]string) 
 	return b
 }
 
+// WithRestorePreamble sets restore preamble data for state restoration operations.
+func (b *SimulationRequestBuilder) WithRestorePreamble(preamble map[string]interface{}) *SimulationRequestBuilder {
+	b.restorePreamble = preamble
+	return b
+}
+
+// WithMockBaseFee sets a custom baseline inclusion fee (in stroops) used for local fee sufficiency checks.
+func (b *SimulationRequestBuilder) WithMockBaseFee(baseFee uint32) *SimulationRequestBuilder {
+	b.mockBaseFee = &baseFee
+	return b
+}
+
 // Build constructs and validates the final SimulationRequest.
 // Returns an error if required fields are missing or validation fails.
 func (b *SimulationRequestBuilder) Build() (*SimulationRequest, error) {
 	// Check for any errors collected during building
 	if len(b.errors) > 0 {
-		return nil, fmt.Errorf("validation errors: %v", b.errors)
+		return nil, errors.WrapValidationError(fmt.Sprintf("%v", b.errors))
 	}
 
 	// Validate required fields
 	if b.envelopeXdr == "" {
-		return nil, fmt.Errorf("envelope XDR is required")
+		return nil, errors.WrapValidationError("envelope XDR is required")
 	}
 
 	if b.resultMetaXdr == "" {
-		return nil, fmt.Errorf("result meta XDR is required")
+		return nil, errors.WrapValidationError("result meta XDR is required")
 	}
 
 	// Build the request
@@ -122,6 +127,15 @@ func (b *SimulationRequestBuilder) Build() (*SimulationRequest, error) {
 	// Only set ledger entries if there are any
 	if len(b.ledgerEntries) > 0 {
 		req.LedgerEntries = b.ledgerEntries
+	}
+
+	// Only set restore preamble if present
+	if b.restorePreamble != nil {
+		req.RestorePreamble = b.restorePreamble
+	}
+
+	if b.mockBaseFee != nil {
+		req.MockBaseFee = b.mockBaseFee
 	}
 
 	return req, nil
@@ -142,6 +156,8 @@ func (b *SimulationRequestBuilder) Reset() *SimulationRequestBuilder {
 	b.envelopeXdr = ""
 	b.resultMetaXdr = ""
 	b.ledgerEntries = make(map[string]string)
+	b.restorePreamble = nil
+	b.mockBaseFee = nil
 	b.errors = make([]string, 0)
 	return b
 }

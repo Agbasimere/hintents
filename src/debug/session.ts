@@ -1,3 +1,6 @@
+// Copyright (c) 2026 dotandev
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /**
  * Mock DebugSession class to satisfy ProtocolHandler dependencies.
  * This will be replaced or integrated with real debug functionality later.
@@ -10,7 +13,7 @@ export class DebugSession {
     }
 
     async start(): Promise<void> {
-        console.log(`🚀 Debug session started for transaction: ${this.config.transactionHash}`);
+        console.log(`[DEPLOY] Debug session started for transaction: ${this.config.transactionHash}`);
         // Real implementation would connect to the network and fetch transaction data
     }
 }

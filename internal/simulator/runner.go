@@ -1,35 +1,40 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package simulator
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"sync"
+	"time"
 
+	"github.com/dotandev/hintents/internal/errors"
+	"github.com/dotandev/hintents/internal/ipc"
 	"github.com/dotandev/hintents/internal/logger"
+	"github.com/dotandev/hintents/internal/metrics"
 )
 
 // Runner handles the execution of the Rust simulator binary
 type Runner struct {
 	BinaryPath string
 	Debug      bool
+
+	mu         sync.Mutex
+	activeCmds map[*exec.Cmd]struct{}
+	closed     bool
+	MockTime   int64 // non-zero overrides Timestamp in every SimulationRequest
+	Validator  *Validator
 }
+
+// Compile-time check to ensure Runner implements RunnerInterface
+var _ RunnerInterface = (*Runner)(nil)
 
 // NewRunner creates a new simulator runner.
 // Search order:
@@ -55,7 +60,20 @@ func NewRunner(simPathOverride string, debug bool) (*Runner, error) {
 	return &Runner{
 		BinaryPath: path,
 		Debug:      debug,
+		activeCmds: make(map[*exec.Cmd]struct{}),
+		Validator:  NewValidator(false),
 	}, nil
+}
+
+// NewRunnerWithMockTime creates a Runner that overrides the ledger timestamp on
+// every request with the provided Unix epoch value. Pass 0 to disable the override.
+func NewRunnerWithMockTime(simPathOverride string, debug bool, mockTime int64) (*Runner, error) {
+	r, err := NewRunner(simPathOverride, debug)
+	if err != nil {
+		return nil, err
+	}
+	r.MockTime = mockTime
+	return r, nil
 }
 
 // -------------------- Binary Discovery --------------------
@@ -66,7 +84,7 @@ func findSimBinary(simPathOverride string) (string, string, error) {
 		if isExecutable(simPathOverride) {
 			return abs(simPathOverride), "flag --sim-path", nil
 		}
-		return "", "", fmt.Errorf("sim-path provided but not executable: %s", simPathOverride)
+		return "", "", errors.WrapSimulatorNotFound(simPathOverride)
 	}
 
 	// 2. Environment variable
@@ -108,9 +126,7 @@ func findSimBinary(simPathOverride string) (string, string, error) {
 		return p, "global PATH", nil
 	}
 
-	return "", "", fmt.Errorf(
-		"erst-sim binary not found (use --sim-path or set ERST_SIM_PATH)",
-	)
+	return "", "", errors.WrapSimulatorNotFound("erst-sim binary not found (use --sim-path or set ERST_SIM_PATH)")
 }
 
 func isExecutable(path string) bool {
@@ -118,7 +134,13 @@ func isExecutable(path string) bool {
 	if err != nil {
 		return false
 	}
-	return !info.IsDir() && info.Mode()&0111 != 0
+	if info.IsDir() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true // On Windows, if it's a file and we can stat it, assume it's executable for now
+	}
+	return info.Mode()&0111 != 0
 }
 
 func abs(path string) string {
@@ -128,11 +150,82 @@ func abs(path string) string {
 	return path
 }
 
+// getSandboxNativeTokenCap returns the effective sandbox native token cap (stroops):
+// request field if set, otherwise env ERST_SANDBOX_NATIVE_TOKEN_CAP_STROOPS.
+func getSandboxNativeTokenCap(req *SimulationRequest) *uint64 {
+	if req != nil && req.SandboxNativeTokenCapStroops != nil {
+		return req.SandboxNativeTokenCapStroops
+	}
+	if v := os.Getenv("ERST_SANDBOX_NATIVE_TOKEN_CAP_STROOPS"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return &n
+		}
+	}
+	return nil
+}
+
+// getSimulatorMemoryLimit returns the effective simulator memory ceiling in bytes:
+// request field if set, otherwise env ERST_SIM_MEMORY_LIMIT_BYTES.
+func getSimulatorMemoryLimit(req *SimulationRequest) *uint64 {
+	if req != nil && req.MemoryLimit != nil {
+		return req.MemoryLimit
+	}
+	if v := os.Getenv("ERST_SIM_MEMORY_LIMIT_BYTES"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return &n
+		}
+	}
+	return nil
+}
+
+func getSimulatorCoverageLCOVPath(req *SimulationRequest) *string {
+	if req != nil && req.CoverageLCOVPath != nil {
+		return req.CoverageLCOVPath
+	}
+	if v := os.Getenv("ERST_SIM_COVERAGE_LCOV_PATH"); v != "" {
+		return &v
+	}
+	return nil
+}
+
 // -------------------- Execution --------------------
 
-func (r *Runner) Run(req *SimulationRequest) (*SimulationResponse, error) {
-	proto := GetOrDefault(req.ProtocolVersion)
+func (r *Runner) Run(ctx context.Context, req *SimulationRequest) (*SimulationResponse, error) {
+	success := false
+	defer func() {
+		// Record simulation execution metrics
+		metrics.RecordSimulationExecution(success)
+	}()
 
+	if req == nil {
+		return nil, errors.NewSimErrorMsg(errors.CodeValidationFailed, "simulation request cannot be nil")
+	}
+
+	if req.MemoryLimit == nil {
+		req.MemoryLimit = getSimulatorMemoryLimit(req)
+	}
+	if req.CoverageLCOVPath == nil {
+		req.CoverageLCOVPath = getSimulatorCoverageLCOVPath(req)
+	}
+	if req.CoverageLCOVPath != nil {
+		req.EnableCoverage = true
+	}
+	// Enforce sandbox native token cap when set (local/sandbox economic constraint)
+	if capStroops := getSandboxNativeTokenCap(req); capStroops != nil {
+		if err := EnforceSandboxNativeTokenCap(req.EnvelopeXdr, *capStroops); err != nil {
+			logger.Logger.Error("Sandbox native token cap exceeded", "error", err)
+			return nil, err
+		}
+	}
+
+	// Validate request before processing
+	if r.Validator != nil {
+		if err := r.Validator.ValidateRequest(req); err != nil {
+			logger.Logger.Error("Request validation failed", "error", err)
+			return nil, err
+		}
+	}
+	proto := GetOrDefault(req.ProtocolVersion)
 	if req.ProtocolVersion != nil {
 		if err := Validate(*req.ProtocolVersion); err != nil {
 			return nil, err
@@ -143,37 +236,146 @@ func (r *Runner) Run(req *SimulationRequest) (*SimulationResponse, error) {
 		return nil, err
 	}
 
+	if r.MockTime != 0 {
+		req.Timestamp = r.MockTime
+	}
+
 	inputBytes, err := json.Marshal(req)
 	if err != nil {
 		logger.Logger.Error("Failed to marshal simulation request", "error", err)
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, errors.WrapMarshalFailed(err)
 	}
 
 	cmd := exec.Command(r.BinaryPath)
+	prepareCommand(cmd)
 	cmd.Stdin = bytes.NewReader(inputBytes)
+	cmd.Env = simulatorEnv()
 
-	var stdout, stderr bytes.Buffer
+	// Use limited-size buffers to prevent memory growth in daemon mode
+	// Set reasonable limits (10MB stdout, 1MB stderr) for typical simulation responses
+	stdout := limitedBuffer{Buffer: bytes.Buffer{}, limit: 10 * 1024 * 1024}
+	stderr := limitedBuffer{Buffer: bytes.Buffer{}, limit: 1 * 1024 * 1024}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
-		logger.Logger.Error("Simulator execution failed", "error", err, "stderr", stderr.String())
-		return nil, fmt.Errorf("simulator execution failed: %w, stderr: %s", err, stderr.String())
+	if err := cmd.Start(); err != nil {
+		return nil, errors.WrapSimCrash(err, "failed to start simulator")
+	}
+
+	if err := r.trackCommand(cmd); err != nil {
+		_ = terminateCommand(cmd, 100*time.Millisecond)
+		_ = cmd.Wait()
+		return nil, err
+	}
+	defer r.untrackCommand(cmd)
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-waitCh:
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			logger.Logger.Error("Simulator execution failed", "error", err, "stderr", stderr.String())
+			return nil, errors.WrapSimCrash(err, stderr.String())
+		}
+	case <-ctx.Done():
+		_ = r.terminateProcessGroup(cmd, 1500*time.Millisecond)
+		<-waitCh
+		return nil, ctx.Err()
 	}
 
 	var resp SimulationResponse
 	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
 		logger.Logger.Error("Failed to unmarshal response", "error", err)
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		return nil, errors.WrapUnmarshalFailed(err, stdout.String())
+	}
+
+	// If the simulator returned a logical error inside the response payload,
+	// classify it into a unified ErstError before returning to the caller.
+	if resp.Error != "" {
+		classified := (&ipc.Error{Code: resp.ErrorCode, Message: resp.Error}).ToErstError()
+		logger.Logger.Error("Simulator returned error",
+			"code", classified.Code,
+			"original", classified.OrigErr,
+		)
+		return nil, classified
 	}
 
 	resp.ProtocolVersion = &proto.Version
-
-	if resp.Status == "error" {
-		return nil, fmt.Errorf("simulation error: %s", resp.Error)
-	}
+	success = true
 
 	return &resp, nil
+}
+
+// limitedBuffer wraps bytes.Buffer with a size limit to prevent memory leaks
+type limitedBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (lb *limitedBuffer) Write(p []byte) (n int, err error) {
+	if lb.Len()+len(p) > lb.limit {
+		// Buffer would exceed limit, discard the data
+		return len(p), nil
+	}
+	return lb.Buffer.Write(p)
+}
+
+func (r *Runner) Close() error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil
+	}
+	r.closed = true
+
+	cmds := make([]*exec.Cmd, 0, len(r.activeCmds))
+	for cmd := range r.activeCmds {
+		cmds = append(cmds, cmd)
+	}
+	r.mu.Unlock()
+
+	var firstErr error
+	for _, cmd := range cmds {
+		if err := r.terminateProcessGroup(cmd, 1500*time.Millisecond); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	return firstErr
+}
+
+func (r *Runner) trackCommand(cmd *exec.Cmd) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return fmt.Errorf("runner is closed")
+	}
+	r.activeCmds[cmd] = struct{}{}
+	return nil
+}
+
+func (r *Runner) untrackCommand(cmd *exec.Cmd) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.activeCmds, cmd)
+}
+
+func (r *Runner) terminateProcessGroup(cmd *exec.Cmd, graceTimeout time.Duration) error {
+	if cmd == nil {
+		return nil
+	}
+	err := terminateCommand(cmd, graceTimeout)
+	if err != nil {
+		logger.Logger.Error("Failed to terminate simulator process", "error", err)
+		return err
+	}
+	return nil
 }
 
 func (r *Runner) applyProtocolConfig(req *SimulationRequest, proto *Protocol) error {
@@ -197,5 +399,38 @@ func (r *Runner) applyProtocolConfig(req *SimulationRequest, proto *Protocol) er
 		req.CustomAuthCfg["supported_opcodes"] = opcodes
 	}
 
+	if calib, ok := proto.Features["resource_calibration"].(*ResourceCalibration); ok {
+		req.ResourceCalibration = calib
+	}
+
 	return nil
+}
+
+// simulatorEnv builds the environment variable list for the simulator subprocess.
+// It inherits the current process environment and ensures that RUST_LOG is set
+// to match ERST_LOG_LEVEL so both the Go and Rust sides honour the same level.
+func simulatorEnv() []string {
+	env := os.Environ()
+
+	erstLevel := os.Getenv("ERST_LOG_LEVEL")
+	if erstLevel == "" {
+		return env
+	}
+
+	rustFilter := logger.RustLogFilter(erstLevel)
+
+	// Replace an existing RUST_LOG entry or append a new one.
+	found := false
+	for i, kv := range env {
+		if len(kv) > 9 && kv[:9] == "RUST_LOG=" {
+			env[i] = "RUST_LOG=" + rustFilter
+			found = true
+			break
+		}
+	}
+	if !found {
+		env = append(env, "RUST_LOG="+rustFilter)
+	}
+
+	return env
 }

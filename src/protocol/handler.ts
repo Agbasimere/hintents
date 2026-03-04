@@ -1,3 +1,6 @@
+// Copyright (c) 2026 dotandev
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 import { URIParser, ParsedURI } from './uri-parser';
 import { DebugSession } from '../debug/session';
 import * as fs from 'fs/promises';
@@ -127,7 +130,7 @@ export class ProtocolHandler {
      * Initialize and start a new debug session
      */
     private async startDebugSession(parsed: ParsedURI): Promise<void> {
-        console.log('🔍 Initiating debug session from dashboard link...');
+        console.log('[SEARCH] Initiating debug session from dashboard link...');
         console.log(`  └─ Transaction: ${parsed.transactionHash}`);
         console.log(`  └─ Network:     ${parsed.network}`);
 

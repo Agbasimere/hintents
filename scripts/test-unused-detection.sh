@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright 2025 Erst Users
+# SPDX-License-Identifier: Apache-2.0
 
 # Test script to verify unused code detection setup
 # This creates a temporary file with unused code to test the linter

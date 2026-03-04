@@ -1,0 +1,3 @@
+testing: warning: no tests to run
+PASS
+ok  	github.com/dotandev/hintents/internal/simulator	2.236s [no tests to run]

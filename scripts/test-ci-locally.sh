@@ -1,52 +1,62 @@
 #!/bin/bash
+# Copyright 2025 Erst Users
+# SPDX-License-Identifier: Apache-2.0
+
 # Test CI checks locally before pushing
 
-set -e
+set -euo pipefail
 
-echo "🔍 Running CI checks locally..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
+
+echo "Running CI checks locally..."
 echo ""
 
 # Go checks
-echo "📦 Go: Verifying dependencies..."
+echo "Go: Verifying dependencies..."
 go mod verify
 
-echo "🎨 Go: Checking formatting..."
+echo "Go: Checking formatting..."
 if [ -n "$(gofmt -l .)" ]; then
-  echo "❌ Go files are not formatted. Run 'go fmt ./...' to fix."
+  echo "[FAIL] Go files are not formatted. Run 'go fmt ./...' to fix."
   gofmt -d .
   exit 1
 fi
-echo "✅ Go files are properly formatted"
+echo "[OK] Go files are properly formatted"
 
-echo "🔎 Go: Running go vet..."
+echo "Go: Running go vet..."
 go vet ./...
 
-echo "🧪 Go: Running tests..."
-go test -v -race ./...
-
-echo "🏗️  Go: Building..."
+echo "Go: Building..."
 go build -v ./...
+
+echo "Go: Building erst binary for integration tests..."
+go build -o erst ./cmd/erst
+
+echo "Go: Running tests..."
+go test -v -race ./...
 
 # Rust checks
 echo ""
-echo "🦀 Rust: Checking formatting..."
+echo "Rust: Checking formatting..."
 cd simulator
 if ! cargo fmt --check; then
-  echo "❌ Rust files are not formatted. Run 'cargo fmt' to fix."
+  echo "[FAIL] Rust files are not formatted. Run 'cargo fmt' to fix."
   exit 1
 fi
-echo "✅ Rust files are properly formatted"
+echo "[OK] Rust files are properly formatted"
 
-echo "📎 Rust: Running Clippy..."
+echo "Rust: Running Clippy..."
 cargo clippy --all-targets --all-features -- -D warnings
 
-echo "🧪 Rust: Running tests..."
+echo "Rust: Running tests..."
 cargo test --verbose
 
-echo "🏗️  Rust: Building..."
+echo "Rust: Building..."
 cargo build --verbose
 
 cd ..
 
 echo ""
-echo "✅ All CI checks passed! Safe to push."
+echo "[OK] All CI checks passed! Safe to push."

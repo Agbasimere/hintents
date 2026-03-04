@@ -1,0 +1,109 @@
+// Copyright (c) 2026 dotandev
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+import { URL } from 'url';
+
+import type { SDKMiddleware } from '../xdr/types';
+
+export interface RPCConfig {
+    urls: string[];
+    timeout: number;
+    retries: number;
+    retryDelay: number;
+    circuitBreakerThreshold: number;
+    circuitBreakerTimeout: number;
+    maxRedirects: number;
+    headers?: Record<string, string>;
+    middleware?: SDKMiddleware[];
+}
+
+export class RPCConfigParser {
+    /**
+     * Parse RPC URLs from comma-separated string or array
+     */
+    static parseUrls(input: string | string[]): string[] {
+        const urls: string[] = [];
+
+        if (Array.isArray(input)) {
+            urls.push(...input);
+        } else if (typeof input === 'string') {
+            // Split by comma and trim whitespace
+            urls.push(...input.split(',').map(url => url.trim()));
+        }
+
+        // Validate each URL
+        const validUrls = urls.filter(url => this.isValidUrl(url));
+
+        if (validUrls.length === 0) {
+            throw new Error('No valid RPC URLs');
+        }
+
+        return validUrls;
+    }
+
+    /**
+     * Validate URL format
+     */
+    static isValidUrl(urlString: string): boolean {
+        try {
+            const url = new URL(urlString);
+            return url.protocol === 'http:' || url.protocol === 'https:';
+        } catch {
+            console.warn(`[WARN]  Invalid RPC URL skipped: ${urlString}`);
+            return false;
+        }
+    }
+
+    /**
+     * Load RPC configuration from environment and CLI args
+     */
+    static loadConfig(options: {
+        rpc?: string | string[];
+        timeout?: number;
+        retries?: number;
+    }): RPCConfig {
+        // Get URLs from CLI args or environment variable
+        const urlInput = options.rpc || process.env.STELLAR_RPC_URLS;
+
+        if (!urlInput) {
+            throw new Error('No RPC URLs configured. Use --rpc flag or STELLAR_RPC_URLS env variable');
+        }
+
+        // Phase 1: parse
+        const urls = this.parseUrls(urlInput);
+
+        // Phase 2: assign defaults (only assign when not provided)
+        const partial: Partial<RPCConfig> = {
+            urls,
+            timeout: options.timeout,
+            retries: options.retries,
+            // leave other fields undefined so defaults applier can fill
+            retryDelay: undefined as any,
+            circuitBreakerThreshold: undefined as any,
+            circuitBreakerTimeout: undefined as any,
+            maxRedirects: undefined as any,
+        };
+
+        const config: RPCConfig = {
+            urls: partial.urls as string[],
+            timeout: partial.timeout ?? 30000,
+            retries: partial.retries ?? 3,
+            retryDelay: 1000,
+            circuitBreakerThreshold: 5,
+            circuitBreakerTimeout: 60000,
+            maxRedirects: 5,
+        };
+
+        // Phase 3: validate using pluggable validators
+        // Validators are intentionally implemented in a separate module to
+        // keep parsing, defaulting, and validation distinct.
+        // Import dynamically to avoid circular top-level ordering issues in tests.
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { UrlsValidator, NumericValidator } = require('./validators');
+
+        new UrlsValidator().validate(config as RPCConfig);
+        new NumericValidator().validate(config as RPCConfig);
+
+        return config;
+    }
+}

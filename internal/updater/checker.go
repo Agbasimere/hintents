@@ -1,16 +1,5 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package updater
 
@@ -87,20 +76,13 @@ func (c *Checker) CheckForUpdates() {
 		return
 	}
 
-	// Update cache with the latest version
+	// Update cache with the latest version (banner is shown from cache at next run start)
 	if err := c.updateCache(latestVersion); err != nil {
 		// Silent failure
 		return
 	}
-
-	// Compare versions
-	needsUpdate, err := c.compareVersions(c.currentVersion, latestVersion)
-	if err != nil || !needsUpdate {
-		return
-	}
-
-	// Display notification
-	c.displayNotification(latestVersion)
+	// Do not display here; banner is shown once per run from ShowBannerFromCache to avoid
+	// mid-output or duplicate messages.
 }
 
 // shouldCheck determines if we should check based on cache
@@ -187,13 +169,50 @@ func (c *Checker) compareVersions(current, latest string) (bool, error) {
 	return latestVer.GreaterThan(currentVer), nil
 }
 
-// displayNotification prints the update message to stderr
+// displayNotification prints the update message to stderr (small one-line banner)
 func (c *Checker) displayNotification(latestVersion string) {
 	message := fmt.Sprintf(
-		"\n💡 A new version (%s) is available! Run 'go install github.com/dotandev/hintents/cmd/erst@latest' to update.\n\n",
+		"Upgrade available: %s — run 'go install github.com/dotandev/hintents/cmd/erst@latest' to update\n",
 		latestVersion,
 	)
 	fmt.Fprint(os.Stderr, message)
+}
+
+// ShowBannerFromCache reads the last update check cache and, if a newer version
+// was found, prints a small "Upgrade available" banner to stderr. Called at CLI
+// start so the banner appears once per run without blocking. Skips if update
+// checking is disabled or cache is missing/invalid.
+func ShowBannerFromCache(currentVersion string) {
+	c := NewChecker(currentVersion)
+	c.showBannerFromCache()
+}
+
+// ShowBannerFromCacheWithCacheDir is for testing: same as ShowBannerFromCache
+// but uses the given cache directory (full path to the erst cache dir, e.g. …/erst).
+func ShowBannerFromCacheWithCacheDir(currentVersion, cacheDir string) {
+	c := &Checker{currentVersion: currentVersion, cacheDir: cacheDir}
+	c.showBannerFromCache()
+}
+
+// showBannerFromCache reads cache and displays the banner if cached latest > current.
+func (c *Checker) showBannerFromCache() {
+	if c.isUpdateCheckDisabled() {
+		return
+	}
+	cacheFile := filepath.Join(c.cacheDir, "last_update_check")
+	data, err := os.ReadFile(cacheFile)
+	if err != nil {
+		return
+	}
+	var cache CacheData
+	if err := json.Unmarshal(data, &cache); err != nil || cache.LatestVersion == "" {
+		return
+	}
+	needsUpdate, err := c.compareVersions(c.currentVersion, cache.LatestVersion)
+	if err != nil || !needsUpdate {
+		return
+	}
+	c.displayNotification(cache.LatestVersion)
 }
 
 // updateCache updates the cache file with the latest check time and version

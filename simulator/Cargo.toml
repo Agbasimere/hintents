@@ -1,21 +1,51 @@
 [package]
-name = "erst-simulator"
+name = "simulator"
 version = "0.1.0"
 edition = "2021"
 
+[lints.rust]
+unused_variables = "deny"
+unused_imports = "deny"
+unused_mut = "deny"
+dead_code = "deny"
+unused_assignments = "deny"
+
+[lints.clippy]
+all = "deny"
+pedantic = "warn"
+nursery = "warn"
+
 [dependencies]
-soroban-env-host = "20.3.0"
-soroban-sdk = "20.3.0"
-hex = "0.4"
-serde = { version = "1.0.192", features = ["derive"] }
-serde_json = "1.0"
-clap = { version = "4.4", features = ["derive"] }
+# soroban-env-host major version == Soroban protocol version.
+# Protocol 21 (v21.x) introduced DiagnosticLevel, get_events(), and the
+# HostedContractEvent.failed_call field that this simulator relies on.
+# We accept any release in the 21-25 range so the binary stays compatible
+# with both mainnet protocol 21 and subsequent minor protocol bumps.
+soroban-env-host = { version = ">=21.0, <26" } # Updated to latest version
 base64 = "0.21"
+clap = { version = "4.4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 inferno = "0.11"
-jsonschema = "0.17"
-colored = "2.0.0"
+jsonschema = "0.40.2"
+object = { version = "0.38.1", features = ["wasm"] }
+gimli = "0.31"
+wasmparser = "0.245.1"
+sha2 = "0.10.9"
+dirs = "6.0.0"
+hex = "0.4.3"
+bincode = "1.3.3"
+async-trait = "0.1.89"
+thiserror = "2.0.18"
+libloading = "0.8"
+ed25519-dalek = { version = "2.2.0", features = ["pem", "pkcs8"] }
+k256 = { version = "0.13.4", features = ["ecdsa"] }
+rand = "0.8"
+libc = "0.2"
 
-[[bin]]
-name = "erst-sim"
-path = "src/main.rs"
-
+[dev-dependencies]
+tempfile = "3.26.0"
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
+wat = "1"

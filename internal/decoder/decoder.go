@@ -1,18 +1,5 @@
 // Copyright 2025 Erst Users
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 package decoder
 
@@ -21,7 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // CallNode represents a node in the execution call tree
@@ -123,7 +110,8 @@ func parseEvent(diag xdr.DiagnosticEvent) DecodedEvent {
 		contractID = hex.EncodeToString(diag.Event.ContractId[:])
 	}
 
-	topics := make([]string, 0)
+	// Pre-allocate topics slice capacity to reduce re-allocations
+	topics := make([]string, 0, len(diag.Event.Body.V0.Topics))
 	for _, topic := range diag.Event.Body.V0.Topics {
 		// Attempt to convert to string if symbol, otherwise hex/debug
 		if topic.Type == xdr.ScValTypeScvSymbol {

@@ -1,16 +1,5 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package cmd
 
@@ -18,17 +7,23 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/dotandev/hintents/internal/errors"
 	"github.com/dotandev/hintents/internal/trace"
+	"github.com/dotandev/hintents/internal/visualizer"
 	"github.com/spf13/cobra"
 )
 
 var (
-	traceFile string
+	traceFile      string
+	traceThemeFlag string
+	tracePrint     bool
+	traceNoColor   bool
 )
 
 var traceCmd = &cobra.Command{
-	Use:   "trace <trace-file>",
-	Short: "Interactive trace navigation and debugging",
+	Use:     "trace <trace-file>",
+	GroupID: "core",
+	Short:   "Interactive trace navigation and debugging",
 	Long: `Launch an interactive trace viewer for bi-directional navigation through execution traces.
 
 The trace viewer allows you to:
@@ -37,34 +32,55 @@ The trace viewer allows you to:
 - Reconstruct state at any point
 - View memory and host state changes
 
+Use --print for a one-shot, colour-coded ASCII tree report suitable for CI
+logs or piping to other tools. Add --no-color to disable ANSI colours.
+
 Example:
   erst trace execution.json
-  erst trace --file debug_trace.json`,
+  erst trace --file debug_trace.json
+  erst trace --print execution.json
+  erst trace --print --no-color execution.json | less`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Apply theme if specified, otherwise auto-detect
+		if traceThemeFlag != "" {
+			visualizer.SetTheme(visualizer.Theme(traceThemeFlag))
+		} else {
+			visualizer.SetTheme(visualizer.DetectTheme())
+		}
+
 		var filename string
 		if len(args) > 0 {
 			filename = args[0]
 		} else if traceFile != "" {
 			filename = traceFile
 		} else {
-			return fmt.Errorf("trace file required. Use: erst trace <file> or --file <file>")
+			return errors.WrapCliArgumentRequired("file")
 		}
 
 		// Check if file exists
 		if _, err := os.Stat(filename); os.IsNotExist(err) {
-			return fmt.Errorf("trace file not found: %s", filename)
+			return errors.WrapValidationError(fmt.Sprintf("trace file not found: %s", filename))
 		}
 
 		// Load trace from file
 		data, err := os.ReadFile(filename)
 		if err != nil {
-			return fmt.Errorf("failed to read trace file: %w", err)
+			return errors.WrapValidationError(fmt.Sprintf("failed to read trace file: %v", err))
 		}
 
 		executionTrace, err := trace.FromJSON(data)
 		if err != nil {
-			return fmt.Errorf("failed to parse trace file: %w", err)
+			return errors.WrapUnmarshalFailed(err, "trace")
+		}
+
+		// --print: render a rich ASCII tree report then exit (non-interactive)
+		if tracePrint {
+			opts := trace.PrintOptions{
+				NoColor: traceNoColor,
+			}
+			trace.PrintExecutionTrace(executionTrace, opts)
+			return nil
 		}
 
 		// Start interactive viewer
@@ -75,5 +91,11 @@ Example:
 
 func init() {
 	traceCmd.Flags().StringVarP(&traceFile, "file", "f", "", "Trace file to load")
+	traceCmd.Flags().StringVar(&traceThemeFlag, "theme", "", "Color theme (default, deuteranopia, protanopia, tritanopia, high-contrast)")
+	traceCmd.Flags().BoolVar(&tracePrint, "print", false, "Print a rich ASCII tree report and exit (non-interactive)")
+	traceCmd.Flags().BoolVar(&traceNoColor, "no-color", false, "Disable ANSI colour output (also honoured via NO_COLOR env var)")
+
+	_ = traceCmd.RegisterFlagCompletionFunc("theme", completeThemeFlag)
+
 	rootCmd.AddCommand(traceCmd)
 }

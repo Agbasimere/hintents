@@ -15,7 +15,7 @@ import (
 // ExampleClient_GetLedgerHeader demonstrates how to fetch ledger header information
 func ExampleClient_GetLedgerHeader() {
 	// Create a client for testnet
-	client := rpc.NewClient(rpc.Testnet, "")
+	client, _ := rpc.NewClient(rpc.WithNetwork(rpc.Testnet))
 
 	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -52,7 +52,7 @@ func ExampleClient_GetLedgerHeader() {
 
 // ExampleClient_GetLedgerHeader_errorHandling demonstrates error handling patterns
 func ExampleClient_GetLedgerHeader_errorHandling() {
-	client := rpc.NewClient(rpc.Testnet, "")
+	client, _ := rpc.NewClient(rpc.WithNetwork(rpc.Testnet))
 	ctx := context.Background()
 
 	header, err := client.GetLedgerHeader(ctx, 999999999)
@@ -81,7 +81,7 @@ func ExampleClient_GetLedgerHeader_errorHandling() {
 
 // ExampleClient_GetLedgerHeader_simulation demonstrates using ledger data for simulation
 func ExampleClient_GetLedgerHeader_simulation() {
-	client := rpc.NewClient(rpc.Testnet, "")
+	client, _ := rpc.NewClient(rpc.WithNetwork(rpc.Testnet))
 	ctx := context.Background()
 
 	// Fetch the ledger where a transaction was executed
@@ -104,14 +104,14 @@ func ExampleClient_GetLedgerHeader_simulation() {
 // ExampleNewClient demonstrates creating clients for different networks
 func ExampleNewClient() {
 	// Create a testnet client
-	testnetClient := rpc.NewClient(rpc.Testnet, "")
+	testnetClient, _ := rpc.NewClient(rpc.WithNetwork(rpc.Testnet))
 	fmt.Printf("Testnet client created: %v\n", testnetClient.Network)
 
 	// Create a mainnet client
-	mainnetClient := rpc.NewClient(rpc.Mainnet, "")
+	mainnetClient, _ := rpc.NewClient(rpc.WithNetwork(rpc.Mainnet))
 	fmt.Printf("Mainnet client created: %v\n", mainnetClient.Network)
 
 	// Create a futurenet client
-	futurenetClient := rpc.NewClient(rpc.Futurenet, "")
+	futurenetClient, _ := rpc.NewClient(rpc.WithNetwork(rpc.Futurenet))
 	fmt.Printf("Futurenet client created: %v\n", futurenetClient.Network)
 }

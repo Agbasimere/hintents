@@ -1,32 +1,27 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package cmd
 
 import (
+	"context"
+	"os"
+	"os/signal"
+	"sync/atomic"
+	"syscall"
+
 	"github.com/dotandev/hintents/internal/localization"
+	"github.com/dotandev/hintents/internal/shutdown"
+	"github.com/dotandev/hintents/internal/updater"
 	"github.com/spf13/cobra"
 )
 
-// Version is set by main.go from build flags
-var Version = "dev"
-
 // Global flag variables
 var (
-	TimestampFlag int64
-	WindowFlag    int64
-	ProfileFlag   bool
+	TimestampFlag     int64
+	WindowFlag        int64
+	ProfileFlag       bool
+	ProfileFormatFlag string
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -37,12 +32,12 @@ var rootCmd = &cobra.Command{
 debug failed Soroban transactions and analyze smart contract execution.
 
 Key features:
-  - Debug failed transactions with detailed error traces
-  - Simulate transaction execution locally
-  - Track token flows and contract events
-  - Manage debugging sessions for complex workflows
-  - Cache transaction data for offline analysis
-  - Local WASM replay for rapid contract development
+  • Debug failed transactions with detailed error traces
+  • Simulate transaction execution locally
+  • Track token flows and contract events
+  • Manage debugging sessions for complex workflows
+  • Cache transaction data for offline analysis
+  • Local WASM replay for rapid contract development
 
 Examples:
   erst debug abc123...def                    Debug a transaction
@@ -53,7 +48,17 @@ Examples:
 
 Get started with 'erst debug --help' or visit the documentation.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		return localization.LoadTranslations()
+		// Load localizations
+		if err := localization.LoadTranslations(); err != nil {
+			return err
+		}
+
+		// Show "Upgrade available" banner from last run's cached check (non-blocking)
+		updater.ShowBannerFromCache(Version)
+		// Ping version endpoint asynchronously for next run
+		checkForUpdatesAsync()
+
+		return nil
 	},
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -62,7 +67,90 @@ Get started with 'erst debug --help' or visit the documentation.`,
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() error {
-	return rootCmd.Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	coordinator := shutdown.NewCoordinator()
+	setShutdownCoordinator(coordinator)
+	defer clearShutdownCoordinator()
+
+	return executeWithSignals(ctx, stop, sigCh, coordinator, func(execCtx context.Context) error {
+		return rootCmd.ExecuteContext(execCtx)
+	})
+}
+
+var forceExit = os.Exit
+
+func executeWithSignals(
+	ctx context.Context,
+	stop context.CancelFunc,
+	sigCh <-chan os.Signal,
+	coordinator *shutdown.Coordinator,
+	execFn func(context.Context) error,
+) error {
+	var interrupted atomic.Bool
+	shutdownDone := make(chan struct{})
+
+	go func() {
+		defer close(shutdownDone)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-sigCh:
+				if interrupted.CompareAndSwap(false, true) {
+					stop()
+					shutdownComplete := make(chan struct{})
+					go func() {
+						runShutdownHooksWithTimeout(coordinator, shutdownTimeout)
+						close(shutdownComplete)
+					}()
+					select {
+					case <-shutdownComplete:
+					case <-sigCh:
+						forceExit(InterruptExitCode)
+					}
+					return
+				}
+				forceExit(InterruptExitCode)
+			}
+		}
+	}()
+
+	err := execFn(ctx)
+	stop()
+	<-shutdownDone
+
+	if interrupted.Load() {
+		_ = err
+		return ErrInterrupted
+	}
+
+	return err
+}
+
+// checkForUpdatesAsync runs the update check in a goroutine to not block CLI startup
+func checkForUpdatesAsync() {
+	// Run update check in background goroutine
+	go func() {
+		// Use the Version variable from version.go
+		checker := updater.NewChecker(Version)
+		checker.CheckForUpdates()
+	}()
+}
+
+// checkForUpdatesAsync runs the update check in a goroutine to not block CLI startup
+func checkForUpdatesAsync() {
+	// Run update check in background goroutine
+	go func() {
+		// Use the Version variable from version.go
+		checker := updater.NewChecker(Version)
+		checker.CheckForUpdates()
+	}()
 }
 
 func init() {
@@ -85,9 +173,38 @@ func init() {
 		&ProfileFlag,
 		"profile",
 		false,
-		"Enable CPU/Memory profiling and generate a flamegraph SVG",
+		"Enable CPU/Memory profiling and generate a flamegraph",
 	)
 
+	rootCmd.PersistentFlags().StringVar(
+		&ProfileFormatFlag,
+		"profile-format",
+		"html",
+		"Flamegraph export format: 'html' (interactive) or 'svg' (raw)",
+	)
+
+	// Define command groups for better organization
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "core",
+		Title: "Core Debugging Commands:",
+	})
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "testing",
+		Title: "Testing & Validation Commands:",
+	})
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "management",
+		Title: "Session & Cache Management:",
+	})
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "development",
+		Title: "Development Tools:",
+	})
+	rootCmd.AddGroup(&cobra.Group{
+		ID:    "utility",
+		Title: "Utility Commands:",
+	})
+
 	// Register commands
-	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(statsCmd)
 }

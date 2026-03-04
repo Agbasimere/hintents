@@ -1,22 +1,13 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package simulator
 
 import (
+	"context"
 	"testing"
 
+	"github.com/dotandev/hintents/internal/errors"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -36,7 +27,7 @@ func TestNewRunnerInterface(t *testing.T) {
 	// but the interface structure is correct
 	if err != nil {
 		// Expected in test environment without erst-sim binary
-		assert.Contains(t, err.Error(), "erst-sim binary not found")
+		assert.True(t, errors.Is(err, errors.ErrSimulatorNotFound))
 	} else {
 		// If binary exists, verify interface is returned
 		assert.NotNil(t, runner)
@@ -47,13 +38,14 @@ func TestNewRunnerInterface(t *testing.T) {
 func TestExampleUsage(t *testing.T) {
 	// Create a mock implementation for testing
 	mockRunner := &mockRunnerForTest{}
+	ctx := context.Background()
 
 	req := &SimulationRequest{
 		EnvelopeXdr:   "test-envelope",
 		ResultMetaXdr: "test-meta",
 	}
 
-	resp, err := ExampleUsage(mockRunner, req)
+	resp, err := ExampleUsage(ctx, mockRunner, req)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -63,9 +55,13 @@ func TestExampleUsage(t *testing.T) {
 // Simple mock for testing the interface
 type mockRunnerForTest struct{}
 
-func (m *mockRunnerForTest) Run(req *SimulationRequest) (*SimulationResponse, error) {
+func (m *mockRunnerForTest) Run(ctx context.Context, req *SimulationRequest) (*SimulationResponse, error) {
 	return &SimulationResponse{
 		Status: "success",
 		Events: []string{"mock-event"},
 	}, nil
+}
+
+func (m *mockRunnerForTest) Close() error {
+	return nil
 }

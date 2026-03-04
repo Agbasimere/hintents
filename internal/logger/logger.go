@@ -1,52 +1,178 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package logger
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
+	"strings"
+	"sync"
 )
 
-// Logger is the global logger instance
-var Logger *slog.Logger
+var (
+	Logger *slog.Logger
+	level  = new(slog.LevelVar)
+	mu     sync.Mutex
+)
 
-// Level is the current log level
-var Level = new(slog.LevelVar)
+// Custom log levels
+const (
+	LevelTrace = slog.Level(-8) // More verbose than Debug (-4)
+)
 
 func init() {
-	// Initialize with a default logger to prevent panics
-	Init(slog.LevelInfo, os.Stderr)
+	lvl := parseLevelFromEnv()
+	initLogger(lvl, os.Stderr, false)
 }
 
-// Init initializes the logger with the specified level
-func Init(level slog.Level, output io.Writer) {
-	if output == nil {
-		output = os.Stderr
+func parseLevelFromEnv() slog.Level {
+	env := strings.ToUpper(os.Getenv("ERST_LOG_LEVEL"))
+	return ParseLevel(env)
+}
+
+// ParseLevel converts a string to a slog.Level
+func ParseLevel(levelStr string) slog.Level {
+	switch strings.ToUpper(levelStr) {
+	case "TRACE":
+		return LevelTrace
+	case "DEBUG":
+	return ParseLogLevel(os.Getenv("ERST_LOG_LEVEL"))
+}
+
+// ParseLogLevel converts a human-readable level string (e.g. "debug", "info",
+// "warn", "error") into the corresponding slog.Level. Unknown values default
+// to slog.LevelInfo.
+func ParseLogLevel(s string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "trace", "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// RustLogFilter returns the RUST_LOG-compatible filter string that corresponds
+// to the given ERST log level name. This is used when spawning the Rust
+// simulator subprocess so that a single ERST_LOG_LEVEL value controls both the
+// Go logger and the Rust tracing subscriber.
+func RustLogFilter(erstLevel string) string {
+	switch strings.ToLower(strings.TrimSpace(erstLevel)) {
+	case "trace":
+		return "trace"
+	case "debug":
+		return "debug"
+	case "info":
+		return "info"
+	case "warn", "warning":
+		return "warn"
+	case "error":
+		return "error"
+	default:
+		return "info"
+	}
+}
+
+func initLogger(lvl slog.Level, w io.Writer, useJSON bool) {
+	if w == nil {
+		w = os.Stderr
 	}
 
-	handler := slog.NewJSONHandler(output, &slog.HandlerOptions{
-		Level:     Level,
-		AddSource: true,
-	})
+	level.Set(lvl)
+
+	var handler slog.Handler
+	if useJSON {
+		handler = slog.NewJSONHandler(w, &slog.HandlerOptions{
+			Level:     level,
+			AddSource: true,
+		})
+	} else {
+		handler = NewTextHandler(w, &slog.HandlerOptions{
+			Level:     level,
+			AddSource: true,
+		})
+	}
 
 	Logger = slog.New(handler)
-	Level.Set(level)
 }
 
-// SetLevel changes the log level programmatically
-func SetLevel(level slog.Level) {
-	Level.Set(level)
+func SetLevel(lvl slog.Level) {
+	mu.Lock()
+	defer mu.Unlock()
+	level.Set(lvl)
+}
+
+func SetOutput(w io.Writer, useJSON bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	initLogger(level.Level(), w, useJSON)
+}
+
+type TextHandler struct {
+	handler slog.Handler
+}
+
+func NewTextHandler(w io.Writer, opts *slog.HandlerOptions) *TextHandler {
+	if opts == nil {
+		opts = &slog.HandlerOptions{}
+	}
+	return &TextHandler{
+		handler: slog.NewTextHandler(w, opts),
+	}
+}
+
+func (h *TextHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.handler.Enabled(ctx, level)
+}
+
+func (h *TextHandler) Handle(ctx context.Context, record slog.Record) error {
+	return h.handler.Handle(ctx, record)
+}
+
+func (h *TextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &TextHandler{handler: h.handler.WithAttrs(attrs)}
+}
+
+func (h *TextHandler) WithGroup(name string) slog.Handler {
+	return &TextHandler{handler: h.handler.WithGroup(name)}
+}
+
+// Trace logs at trace level (more verbose than debug)
+func Trace(msg string, args ...any) {
+	Logger.Log(context.Background(), LevelTrace, msg, args...)
+}
+
+// GetRustLogLevel returns the Rust env_logger compatible log level string
+func GetRustLogLevel() string {
+	currentLevel := level.Level()
+	switch {
+	case currentLevel <= LevelTrace:
+		return "trace"
+	case currentLevel <= slog.LevelDebug:
+		return "debug"
+	case currentLevel <= slog.LevelInfo:
+		return "info"
+	case currentLevel <= slog.LevelWarn:
+		return "warn"
+	default:
+		return "error"
+	}
+}
+
+// GetRustLogFormat returns the format for Rust logger (json or text)
+func GetRustLogFormat() string {
+	// Check if we're using JSON format by inspecting the handler
+	// For now, we'll use an environment variable or default to text
+	if format := os.Getenv("ERST_LOG_FORMAT"); format == "json" {
+		return "json"
+	}
+	return "text"
 }

@@ -1,9 +1,15 @@
 #!/bin/bash
+# Copyright 2025 Erst Users
+# SPDX-License-Identifier: Apache-2.0
 
 # Test script for local WASM replay functionality
 # This script tests the erst debug --wasm feature
 
-set -e
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
 
 echo "========================================="
 echo "Testing Local WASM Replay Feature"
@@ -46,7 +52,7 @@ if ./erst debug --wasm "/tmp/nonexistent.wasm" 2>&1; then
     echo "ERROR: Should have failed with non-existent file"
     exit 1
 else
-    echo "${GREEN}✓ Correctly handled non-existent file${NC}"
+    echo "${GREEN}[OK] Correctly handled non-existent file${NC}"
 fi
 echo ""
 

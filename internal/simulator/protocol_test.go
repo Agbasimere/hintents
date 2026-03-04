@@ -1,16 +1,5 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package simulator
 
@@ -65,9 +54,9 @@ func TestGetOrDefault(t *testing.T) {
 
 func TestFeature(t *testing.T) {
 	tests := []struct {
-		version  uint32
-		key      string
-		wantErr  bool
+		version uint32
+		key     string
+		wantErr bool
 	}{
 		{20, "max_contract_size", false},
 		{21, "max_instruction_limit", false},
@@ -134,7 +123,7 @@ func TestSupported(t *testing.T) {
 
 func TestMergeFeatures(t *testing.T) {
 	custom := map[string]interface{}{
-		"custom_limit": 999999,
+		"custom_limit":      999999,
 		"max_contract_size": 131072,
 	}
 
@@ -150,5 +139,52 @@ func TestMergeFeatures(t *testing.T) {
 
 	if merged["optimized_storage"] != true {
 		t.Errorf("expected base feature optimized_storage true, got %v", merged["optimized_storage"])
+	}
+}
+
+func TestResourceCalibration(t *testing.T) {
+	val, err := Feature(22, "resource_calibration")
+	if err != nil {
+		t.Fatalf("failed to get resource_calibration: %v", err)
+	}
+
+	calib, ok := val.(*ResourceCalibration)
+	if !ok {
+		t.Fatalf("expected *ResourceCalibration, got %T", val)
+	}
+
+	if calib.SHA256Fixed != 3738 {
+		t.Errorf("expected SHA256Fixed 3738, got %d", calib.SHA256Fixed)
+	}
+	if calib.Keccak256Fixed != keccak256FixedCalibration {
+		t.Errorf("expected Keccak256Fixed %d, got %d", keccak256FixedCalibration, calib.Keccak256Fixed)
+	}
+	if calib.Keccak256PerByte != keccak256PerByteCalibration {
+		t.Errorf("expected Keccak256PerByte %d, got %d", keccak256PerByteCalibration, calib.Keccak256PerByte)
+	}
+	if calib.Ed25519Fixed != 377524 {
+		t.Errorf("expected Ed25519Fixed 377524, got %d", calib.Ed25519Fixed)
+	}
+}
+
+func TestKeccakTinyInputEstimateIsLower(t *testing.T) {
+	val, err := Feature(22, "resource_calibration")
+	if err != nil {
+		t.Fatalf("failed to get resource_calibration: %v", err)
+	}
+
+	calib, ok := val.(*ResourceCalibration)
+	if !ok {
+		t.Fatalf("expected *ResourceCalibration, got %T", val)
+	}
+
+	oldFixed := uint64(3766)
+	oldLinear := uint64(63)
+	tinyLen := uint64(8)
+	updatedTinyEstimate := calib.Keccak256Fixed + (calib.Keccak256PerByte * tinyLen)
+	oldTinyEstimate := oldFixed + (oldLinear * tinyLen)
+
+	if updatedTinyEstimate >= oldTinyEstimate {
+		t.Fatalf("expected updated tiny-input estimate to be lower: updated=%d old=%d", updatedTinyEstimate, oldTinyEstimate)
 	}
 }

@@ -1,16 +1,5 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package cache
 
@@ -177,9 +166,9 @@ func (m *Manager) CleanLRU() (*CleanupStatus, error) {
 			break
 		}
 
-		err := os.Remove(file.Path)
-		if err != nil {
-			logger.Logger.Warn("Failed to delete cache file", "path", file.Path, "error", err)
+		removeErr := os.Remove(file.Path)
+		if removeErr != nil {
+			logger.Logger.Warn("Failed to delete cache file", "path", file.Path, "error", removeErr)
 			continue
 		}
 
@@ -238,8 +227,8 @@ func (m *Manager) Clean(force bool) (*CleanupStatus, error) {
 	if !force {
 		fmt.Print("\nThis will delete the oldest cached files. Continue? (yes/no): ")
 		var response string
-		if _, err := fmt.Scanln(&response); err != nil {
-			return status, fmt.Errorf("failed to read input: %w", err)
+		if _, scanErr := fmt.Scanln(&response); scanErr != nil {
+			return status, fmt.Errorf("failed to read input: %w", scanErr)
 		}
 		if response != "yes" && response != "y" {
 			fmt.Println("Cache cleanup cancelled")
@@ -274,9 +263,9 @@ func (m *Manager) Clean(force bool) (*CleanupStatus, error) {
 			break
 		}
 
-		err := os.Remove(file.Path)
-		if err != nil {
-			logger.Logger.Warn("Failed to delete cache file", "path", file.Path, "error", err)
+		removeErr := os.Remove(file.Path)
+		if removeErr != nil {
+			logger.Logger.Warn("Failed to delete cache file", "path", file.Path, "error", removeErr)
 			continue
 		}
 

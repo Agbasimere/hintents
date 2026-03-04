@@ -1,24 +1,15 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package cmd
 
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/dotandev/hintents/internal/errors"
 	"github.com/dotandev/hintents/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -41,8 +32,9 @@ func GetCurrentSession() *session.SessionData {
 }
 
 var sessionCmd = &cobra.Command{
-	Use:   "session",
-	Short: "Manage debugging sessions",
+	Use:     "session",
+	GroupID: "management",
+	Short:   "Manage debugging sessions",
 	Long: `Save, resume, and manage debugging sessions to preserve state across CLI invocations.
 
 Sessions store complete transaction data, simulation results, and analysis context,
@@ -89,7 +81,7 @@ The session ID can be auto-generated or specified with --id flag.`,
 		// Check if we have an active session
 		data := GetCurrentSession()
 		if data == nil {
-			return fmt.Errorf("Error: no active session to save. Run 'erst debug <tx-hash>' first")
+			return errors.WrapSimulationLogicError("no active session to save. Run 'erst debug <tx-hash>' first")
 		}
 
 		// Generate or use provided ID
@@ -105,19 +97,20 @@ The session ID can be auto-generated or specified with --id flag.`,
 		// Open session store
 		store, err := session.NewStore()
 		if err != nil {
-			return fmt.Errorf("failed to open session store: %w", err)
+			return errors.WrapValidationError(fmt.Sprintf("failed to open session store: %v", err))
 		}
 		defer store.Close()
 
 		// Run cleanup before save
-		if err := store.Cleanup(ctx, session.DefaultTTL, session.DefaultMaxSessions); err != nil {
+		err = store.Cleanup(ctx, session.DefaultTTL, session.DefaultMaxSessions)
+		if err != nil {
 			// Log but don't fail on cleanup errors
 			fmt.Fprintf(os.Stderr, "Warning: cleanup failed: %v\n", err)
 		}
 
 		// Save session
 		if err := store.Save(ctx, data); err != nil {
-			return fmt.Errorf("Error: failed to save session: %w", err)
+			return errors.WrapValidationError(fmt.Sprintf("failed to save session: %v", err))
 		}
 
 		fmt.Printf("Session saved: %s\n", data.ID)
@@ -150,24 +143,25 @@ Use 'erst session list' to see available sessions.`,
 		// Open session store
 		store, err := session.NewStore()
 		if err != nil {
-			return fmt.Errorf("Error: failed to open session store: %w", err)
+			return errors.WrapValidationError(fmt.Sprintf("failed to open session store: %v", err))
 		}
 		defer store.Close()
 
 		// Run cleanup
-		if err := store.Cleanup(ctx, session.DefaultTTL, session.DefaultMaxSessions); err != nil {
+		err = store.Cleanup(ctx, session.DefaultTTL, session.DefaultMaxSessions)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: session cleanup failed: %v\n", err)
 		}
 
-		// Load session
-		data, err := store.Load(ctx, sessionID)
+		// Resolve session by exact ID, partial ID prefix, tx hash, or fuzzy match
+		data, err := resolveSessionInput(ctx, store, sessionID)
 		if err != nil {
-			return fmt.Errorf("Error: session '%s' not found or failed to load: %w", sessionID, err)
+			return err
 		}
 
 		// Check schema version compatibility
 		if data.SchemaVersion > session.SchemaVersion {
-			return fmt.Errorf("Error: session was created with a newer version of erst (schema v%d > v%d). Please upgrade erst", data.SchemaVersion, session.SchemaVersion)
+			return errors.WrapProtocolUnsupported(uint32(data.SchemaVersion))
 		}
 
 		// Update status and make it current
@@ -205,6 +199,17 @@ Use 'erst session list' to see available sessions.`,
 			}
 		}
 
+		// Show persisted viewer state if any (best-effort).
+		if uiStore, err := session.NewUIStateStore(); err == nil {
+			defer uiStore.Close()
+			if sections, err := uiStore.LoadSectionState(ctx, data.TxHash); err == nil && len(sections) > 0 {
+				fmt.Printf("\nViewer state: [%s]\n", strings.Join(sections, ", "))
+			}
+			if queries, err := uiStore.RecentSearches(ctx, 5); err == nil && len(queries) > 0 {
+				fmt.Printf("Recent searches: %s\n", strings.Join(queries, ", "))
+			}
+		}
+
 		return nil
 	},
 }
@@ -224,19 +229,20 @@ Displays session ID, network, last access time, and transaction hash.`,
 		// Open session store
 		store, err := session.NewStore()
 		if err != nil {
-			return fmt.Errorf("Error: failed to open session store: %w", err)
+			return errors.WrapValidationError(fmt.Sprintf("failed to open session store: %v", err))
 		}
 		defer store.Close()
 
 		// Run cleanup
-		if err := store.Cleanup(ctx, session.DefaultTTL, session.DefaultMaxSessions); err != nil {
+		err = store.Cleanup(ctx, session.DefaultTTL, session.DefaultMaxSessions)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: session cleanup failed: %v\n", err)
 		}
 
 		// List sessions
 		sessions, err := store.List(ctx, 50)
 		if err != nil {
-			return fmt.Errorf("Error: failed to list sessions: %w", err)
+			return errors.WrapValidationError(fmt.Sprintf("failed to list sessions: %v", err))
 		}
 
 		if len(sessions) == 0 {
@@ -277,16 +283,21 @@ Use 'erst session list' to see available sessions.`,
 		// Open session store
 		store, err := session.NewStore()
 		if err != nil {
-			return fmt.Errorf("Error: failed to open session store: %w", err)
+			return errors.WrapValidationError(fmt.Sprintf("failed to open session store: %v", err))
 		}
 		defer store.Close()
 
-		// Delete session
-		if err := store.Delete(ctx, sessionID); err != nil {
-			return fmt.Errorf("Error: failed to delete session '%s': %w", sessionID, err)
+		// Resolve to a valid session ID before deleting
+		resolved, resolveErr := resolveSessionInput(ctx, store, sessionID)
+		if resolveErr != nil {
+			return resolveErr
 		}
 
-		fmt.Printf("Session deleted: %s\n", sessionID)
+		if err := store.Delete(ctx, resolved.ID); err != nil {
+			return errors.WrapValidationError(fmt.Sprintf("failed to delete session '%s': %v", resolved.ID, err))
+		}
+
+		fmt.Printf("Session deleted: %s\n", resolved.ID)
 		return nil
 	},
 }

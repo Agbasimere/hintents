@@ -40,11 +40,11 @@ if err != nil {
 ```
 
 **Benefits:**
-- ✅ Validation at build time
-- ✅ Clear, readable method names
-- ✅ Self-documenting code
-- ✅ Prevents invalid states
-- ✅ Method chaining for fluent API
+-  Validation at build time
+-  Clear, readable method names
+-  Self-documenting code
+-  Prevents invalid states
+-  Method chaining for fluent API
 
 ## Basic Usage
 
@@ -115,6 +115,10 @@ Adds a single ledger entry. Both key and value must be non-empty.
 #### `WithLedgerEntries(entries map[string]string) *SimulationRequestBuilder`
 
 Sets multiple ledger entries at once. Replaces any previously set entries. Passing `nil` clears all entries.
+
+#### `WithMockBaseFee(baseFee uint32) *SimulationRequestBuilder`
+
+Sets an optional custom baseline inclusion fee (in stroops) for local fee sufficiency checks during simulation.
 
 #### `Reset() *SimulationRequestBuilder`
 

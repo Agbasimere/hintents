@@ -1,78 +1,44 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package visualizer
 
 import (
 	"os"
 
+	"github.com/dotandev/hintents/internal/terminal"
 	"github.com/mattn/go-isatty"
 )
 
-// ANSI SGR codes
-const (
-	sgrReset   = "\033[0m"
-	sgrRed     = "\033[31m"
-	sgrGreen   = "\033[32m"
-	sgrYellow  = "\033[33m"
-	sgrBlue    = "\033[34m"
-	sgrMagenta = "\033[35m"
-	sgrCyan    = "\033[36m"
-	sgrDim     = "\033[2m"
-	sgrBold    = "\033[1m"
-)
+var defaultRenderer terminal.Renderer = terminal.NewANSIRenderer()
 
 // ColorEnabled reports whether ANSI color output should be used.
-// Check order (NO_COLOR has highest priority):
-//   - NO_COLOR (https://no-color.org/): if set (any non-empty value), colors are disabled
-//   - FORCE_COLOR: if set (e.g. FORCE_COLOR=1), forces colors even when not a TTY (useful in CI)
-//   - Non-TTY: when stdout is piped or redirected, colors disabled (no garbage in logs)
-//   - TERM=dumb: minimal terminal, no colors
+// Checks NO_COLOR and TERM=dumb environment variables on every call
+// so that tests can control color via env vars dynamically.
 func ColorEnabled() bool {
-	// NO_COLOR takes precedence over everything
-	if noColor() {
+	// NO_COLOR must always take precedence.
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
 		return false
 	}
-	// FORCE_COLOR allows colors in pipes/CI (e.g. GitHub Actions with ANSI support)
-	if forceColor() {
+	if os.Getenv("FORCE_COLOR") != "" {
 		return true
 	}
-	// Not a real terminal (pipe, redirect, log file)
-	if !isatty.IsTerminal(os.Stdout.Fd()) {
+	if os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	// Dumb terminal (e.g. emacs shell)
-	if termDumb() {
-		return false
-	}
-	return true
+	return isatty.IsTerminal(os.Stdout.Fd())
 }
 
-// noColor returns true if NO_COLOR is set (presence = no color per no-color.org).
-func noColor() bool {
-	_, ok := os.LookupEnv("NO_COLOR")
-	return ok
-}
-
-// forceColor returns true if FORCE_COLOR is set to a non-empty value.
-func forceColor() bool {
-	return os.Getenv("FORCE_COLOR") != ""
-}
-
-// termDumb returns true for minimal terminals that don't support ANSI.
-func termDumb() bool {
-	return os.Getenv("TERM") == "dumb"
+// colorMap maps color names to ANSI SGR codes.
+var colorMap = map[string]string{
+	"red":     sgrRed,
+	"green":   sgrGreen,
+	"yellow":  sgrYellow,
+	"blue":    sgrBlue,
+	"magenta": sgrMagenta,
+	"cyan":    sgrCyan,
+	"bold":    sgrBold,
+	"dim":     sgrDim,
 }
 
 // Colorize returns text with ANSI color if enabled, otherwise plain text.
@@ -80,10 +46,7 @@ func Colorize(text string, color string) string {
 	if !ColorEnabled() {
 		return text
 	}
-	return ansiWrap(text, color)
-}
 
-func ansiWrap(text, color string) string {
 	var code string
 	switch color {
 	case "red":
@@ -105,74 +68,82 @@ func ansiWrap(text, color string) string {
 	default:
 		return text
 	}
+
 	return code + text + sgrReset
 }
 
-// Success returns a success indicator: colored checkmark if enabled, "[OK]" otherwise.
+// ContractBoundary returns a visual separator for cross-contract call transitions.
+func ContractBoundary(fromContract, toContract string) string {
+	line := "--- contract boundary: " + fromContract + " -> " + toContract + " ---"
+	if !ColorEnabled() {
+		return line
+	}
+	return sgrMagenta + sgrBold + line + sgrReset
+}
+
+// Success returns a success indicator.
 func Success() string {
-	if ColorEnabled() {
-		return sgrGreen + "✓" + sgrReset
-	}
-	return "[OK]"
+	return defaultRenderer.Success()
 }
 
-// Warning returns a warning indicator: colored warning sign if enabled, "[!]" otherwise.
+// Warning returns a warning indicator.
 func Warning() string {
-	if ColorEnabled() {
-		return sgrYellow + "⚠" + sgrReset
-	}
-	return "[!]"
+	return defaultRenderer.Warning()
 }
 
-// Error returns an error indicator: colored X if enabled, "[X]" otherwise.
+// Error returns an error indicator.
 func Error() string {
-	if ColorEnabled() {
-		return sgrRed + "✗" + sgrReset
-	}
-	return "[X]"
+	return defaultRenderer.Error()
 }
 
-// Symbol returns a symbol that may be styled; when colors disabled, returns plain ASCII equivalent.
+// Info returns an info indicator.
+func Info() string {
+	return Colorize("[i]", "cyan")
+}
+
+// Symbol returns a symbol name rendered as ASCII markers.
+//
+//nolint:gocyclo
 func Symbol(name string) string {
 	if ColorEnabled() {
 		switch name {
 		case "check":
-			return "✓"
+			return "[OK]"
 		case "cross":
-			return "✗"
+			return "[FAIL]"
 		case "warn":
-			return "⚠"
+			return "[!]"
 		case "arrow_r":
-			return "➡️"
+			return "->"
 		case "arrow_l":
-			return "⬅️"
+			return "<-"
 		case "target":
-			return "🎯"
+			return "[TARGET]"
 		case "pin":
-			return "📍"
+			return "*"
 		case "wrench":
-			return "🔧"
+			return "[TOOL]"
 		case "chart":
-			return "📊"
+			return "[STATS]"
 		case "list":
-			return "📋"
+			return "[LIST]"
 		case "play":
-			return "▶️"
+			return "[PLAY]"
 		case "book":
-			return "📖"
+			return "[DOC]"
 		case "wave":
-			return "👋"
+			return "[HELLO]"
 		case "magnify":
-			return "🔍"
+			return "[SEARCH]"
 		case "logs":
-			return "📋"
+			return "[LOGS]"
 		case "events":
-			return "📡"
+			return "[NET]"
 		default:
 			return name
 		}
 	}
-	// Plain ASCII fallbacks for non-TTY / CI
+
 	switch name {
 	case "check":
 		return "[OK]"

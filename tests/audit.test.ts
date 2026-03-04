@@ -1,48 +1,180 @@
-// Change these back to end with .ts
-import { generateAuditKeys } from '../src/utils/cryptoUtils.ts';
-import { AuditLogger } from '../src/audit/AuditLogger.ts';
-import { verifyAuditLog } from '../src/audit/AuditVerifier.ts';
+// Copyright (c) Hintents Authors.
+// SPDX-License-Identifier: Apache-2.0
 
-const runTest = () => {
-  console.log('--- Starting Audit Log Test ---');
+import { verify } from 'crypto';
+import { AuditLogger } from '../src/audit/AuditLogger';
+import { verifyAuditLog, verifyAuditLogDetailed } from '../src/audit/AuditVerifier';
+import { MockAuditSigner } from '../src/audit/signing/mockSigner';
 
-  // 1. Setup Keys (In prod, these come from Vault/Env)
-  const { publicKey, privateKey } = generateAuditKeys();
+describe('audit signing (signer-agnostic)', () => {
+  test('signs an audit payload and verifies using returned public key', async () => {
+    const signer = new MockAuditSigner();
+    const logger = new AuditLogger(signer, 'mock');
 
-  // 2. Mock Trace Data
-  const traceData = {
-    input: { amount: 100, currency: 'USD', user_id: 'u_123' },
-    state: { balance_before: 500, balance_after: 400 },
-    events: ['INIT_TRANSFER', 'DEBIT_ACCOUNT', 'FEE_CALC'],
-    timestamp: new Date().toISOString()
-  };
+    const traceData = {
+      input: { amount: 100, currency: 'USD', user_id: 'u_123' },
+      state: { balance_before: 500, balance_after: 400 },
+      events: ['INIT_TRANSFER', 'DEBIT_ACCOUNT', 'FEE_CALC'],
+      timestamp: new Date().toISOString(),
+    };
 
-  // 3. Generate Log
-  const logger = new AuditLogger(privateKey);
-  const secureLog = logger.generateLog(traceData);
+    const secureLog = await logger.generateLog(traceData as any);
 
-  console.log('Generated Log:', JSON.stringify(secureLog, null, 2));
+    // Verifier should work without separately supplying a key (uses embedded publicKey)
+    expect(verifyAuditLog(secureLog)).toBe(true);
 
-  // 4. Verify Log
-  const isValid = verifyAuditLog(secureLog, publicKey);
-  
-  if (isValid) {
-    console.log('✅ SUCCESS: Signature and Hash verified.');
-  } else {
-    console.error('❌ FAILED: Invalid log.');
-    process.exit(1);
-  }
+    // Also verify explicitly using Node crypto verify, to ensure public_key() is consistent
+    const ok = verify(
+      null,
+      Buffer.from(secureLog.hash),
+      secureLog.publicKey,
+      Buffer.from(secureLog.signature, 'hex')
+    );
+    expect(ok).toBe(true);
+  });
 
-  // 5. Tamper Test (Optional but recommended)
-  console.log('\n--- Tampering Data ---');
-  secureLog.trace.input.amount = 999999; // Hacker changes amount
-  const isTamperValid = verifyAuditLog(secureLog, publicKey);
-  
-  if (!isTamperValid) {
-    console.log('✅ SUCCESS: Tampered data detected.');
-  } else {
-    console.error('❌ FAILED: Tampered data was accepted.');
-  }
-};
+  test('detects tampering', async () => {
+    const signer = new MockAuditSigner();
+    const logger = new AuditLogger(signer, 'mock');
 
-runTest();
+    const traceData = {
+      input: { amount: 100 },
+      state: { balance_before: 500, balance_after: 400 },
+      events: ['INIT_TRANSFER'],
+      timestamp: new Date().toISOString(),
+    };
+
+    const secureLog: any = await logger.generateLog(traceData as any);
+    secureLog.trace.input.amount = 999999;
+
+    expect(verifyAuditLog(secureLog)).toBe(false);
+  });
+
+  test('verifies multi-signature audit logs', async () => {
+    const signerA = new MockAuditSigner();
+    const signerB = new MockAuditSigner();
+    const logger = new AuditLogger(signerA, 'mock');
+
+    const traceData = {
+      input: { amount: 100 },
+      state: { balance_before: 500, balance_after: 400 },
+      events: ['INIT_TRANSFER'],
+      timestamp: new Date().toISOString(),
+    };
+
+    const multiLog = await logger.generateMultiLog(traceData as any, [
+      { signer: signerA, provider: 'mock', label: 'alice' },
+      { signer: signerB, provider: 'mock', label: 'bob' },
+    ]);
+
+    expect(verifyAuditLog(multiLog)).toBe(true);
+    expect(verifyAuditLog(multiLog, multiLog.signatures[0].publicKey)).toBe(true);
+  });
+});
+
+describe('audit with hardware attestation', () => {
+  test('embeds attestation chain when signer provides it', async () => {
+    const signer = new MockAuditSigner({ withAttestation: true });
+    const logger = new AuditLogger(signer, 'hsm-mock');
+
+    const traceData = {
+      input: { amount: 50 },
+      state: { balance_before: 200, balance_after: 150 },
+      events: ['TRANSFER'],
+      timestamp: new Date().toISOString(),
+    };
+
+    const secureLog = await logger.generateLog(traceData as any);
+
+    // Attestation should be present
+    expect(secureLog.hardware_attestation).toBeDefined();
+    expect(secureLog.hardware_attestation!.certificates.length).toBe(2);
+    expect(secureLog.hardware_attestation!.key_non_exportable).toBe(true);
+    expect(secureLog.hardware_attestation!.token_info).toContain('MockHSM');
+
+    // Hash and signature should be valid even though mock certs are not real X.509
+    const result = verifyAuditLogDetailed(secureLog);
+    expect(result.hash_valid).toBe(true);
+    expect(result.signature_valid).toBe(true);
+    expect(result.attestation).toBeDefined();
+    expect(result.attestation!.present).toBe(true);
+    // chain_valid may be false for mock certs (not real X.509), which is expected
+  });
+
+  test('does not include attestation for software signer', async () => {
+    const signer = new MockAuditSigner(); // no attestation
+    const logger = new AuditLogger(signer, 'software');
+
+    const traceData = {
+      input: { x: 1 },
+      state: {},
+      events: [],
+      timestamp: new Date().toISOString(),
+    };
+
+    const secureLog = await logger.generateLog(traceData as any);
+    expect(secureLog.hardware_attestation).toBeUndefined();
+    expect(verifyAuditLog(secureLog)).toBe(true);
+  });
+
+  test('detects tampering with attestation data', async () => {
+    const signer = new MockAuditSigner({ withAttestation: true });
+    const logger = new AuditLogger(signer, 'hsm-mock');
+
+    const traceData = {
+      input: { amount: 100 },
+      state: {},
+      events: [],
+      timestamp: new Date().toISOString(),
+    };
+
+    const secureLog: any = await logger.generateLog(traceData as any);
+
+    // Tamper with attestation
+    secureLog.hardware_attestation.key_non_exportable = false;
+
+    expect(verifyAuditLog(secureLog)).toBe(false);
+  });
+
+  test('detects stripped attestation', async () => {
+    const signer = new MockAuditSigner({ withAttestation: true });
+    const logger = new AuditLogger(signer, 'hsm-mock');
+
+    const traceData = {
+      input: { amount: 100 },
+      state: {},
+      events: [],
+      timestamp: new Date().toISOString(),
+    };
+
+    const secureLog: any = await logger.generateLog(traceData as any);
+
+    // Remove attestation entirely
+    delete secureLog.hardware_attestation;
+
+    // Hash will mismatch because attestation was included in the hash
+    expect(verifyAuditLog(secureLog)).toBe(false);
+  });
+
+  test('detailed verification returns attestation info', async () => {
+    const signer = new MockAuditSigner({ withAttestation: true });
+    const logger = new AuditLogger(signer, 'hsm-mock');
+
+    const traceData = {
+      input: { y: 2 },
+      state: {},
+      events: [],
+      timestamp: new Date().toISOString(),
+    };
+
+    const secureLog = await logger.generateLog(traceData as any);
+    const result = verifyAuditLogDetailed(secureLog);
+
+    expect(result.hash_valid).toBe(true);
+    expect(result.signature_valid).toBe(true);
+    expect(result.attestation).toBeDefined();
+    expect(result.attestation!.present).toBe(true);
+    expect(result.attestation!.key_non_exportable).toBe(true);
+    expect(result.attestation!.chain_length).toBe(2);
+  });
+});

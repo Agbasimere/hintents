@@ -1,16 +1,5 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package tokenflow
 
@@ -21,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/stellar/go/strkey"
-	"github.com/stellar/go/xdr"
+	"github.com/stellar/go-stellar-sdk/strkey"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // Kind is the semantic meaning of a movement.
@@ -111,7 +100,7 @@ func extractNativeXLMPayments(envelopeXdrB64 string) ([]Transfer, error) {
 	}
 
 	var env xdr.TransactionEnvelope
-	if err := xdr.SafeUnmarshal(envBytes, &env); err != nil {
+	if err = xdr.SafeUnmarshal(envBytes, &env); err != nil {
 		return nil, fmt.Errorf("unmarshal TransactionEnvelope: %w", err)
 	}
 
@@ -141,7 +130,7 @@ func extractNativeXLMPayments(envelopeXdrB64 string) ([]Transfer, error) {
 	for _, op := range tx.Operations {
 		opSource := source
 		if op.SourceAccount != nil {
-			if s, err := muxedAccountToAddress(*op.SourceAccount); err == nil {
+			if s, srcErr := muxedAccountToAddress(*op.SourceAccount); srcErr == nil {
 				opSource = s
 			}
 		}
@@ -180,7 +169,7 @@ func extractSACTransfersAndMints(resultMetaXdrB64 string) ([]Transfer, error) {
 	}
 
 	var rm xdr.TransactionResultMeta
-	if err := xdr.SafeUnmarshal(metaBytes, &rm); err != nil {
+	if err = xdr.SafeUnmarshal(metaBytes, &rm); err != nil {
 		return nil, fmt.Errorf("unmarshal TransactionResultMeta: %w", err)
 	}
 

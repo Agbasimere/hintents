@@ -1,20 +1,10 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package simulator
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -26,18 +16,21 @@ func TestMockRunnerDefault(t *testing.T) {
 		EnvelopeXdr: "test",
 	}
 
-	resp, err := mock.Run(req)
+	resp, err := mock.Run(context.Background(), req)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 	if resp.Status != "success" {
 		t.Errorf("expected success status, got %s", resp.Status)
 	}
+	if err := mock.Close(); err != nil {
+		t.Errorf("unexpected close error: %v", err)
+	}
 }
 
 func TestMockRunnerCustom(t *testing.T) {
 	customErr := errors.New("custom error")
-	mock := NewMockRunner(func(req *SimulationRequest) (*SimulationResponse, error) {
+	mock := NewMockRunner(func(ctx context.Context, req *SimulationRequest) (*SimulationResponse, error) {
 		return nil, customErr
 	})
 
@@ -45,7 +38,7 @@ func TestMockRunnerCustom(t *testing.T) {
 		EnvelopeXdr: "test",
 	}
 
-	resp, err := mock.Run(req)
+	resp, err := mock.Run(context.Background(), req)
 	if err != customErr {
 		t.Errorf("expected custom error, got %v", err)
 	}
@@ -60,7 +53,7 @@ func TestMockRunnerCustomResponse(t *testing.T) {
 		Error:  "test error",
 		Events: []string{"event1", "event2"},
 	}
-	mock := NewMockRunner(func(req *SimulationRequest) (*SimulationResponse, error) {
+	mock := NewMockRunner(func(ctx context.Context, req *SimulationRequest) (*SimulationResponse, error) {
 		return expectedResp, nil
 	})
 
@@ -68,7 +61,7 @@ func TestMockRunnerCustomResponse(t *testing.T) {
 		EnvelopeXdr: "test",
 	}
 
-	resp, err := mock.Run(req)
+	resp, err := mock.Run(context.Background(), req)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -91,11 +84,14 @@ func TestRunnerInterface(t *testing.T) {
 		EnvelopeXdr: "test",
 	}
 
-	resp, err := runner.Run(req)
+	resp, err := runner.Run(context.Background(), req)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 	if resp == nil {
 		t.Error("response should not be nil")
+	}
+	if err := runner.Close(); err != nil {
+		t.Errorf("unexpected close error: %v", err)
 	}
 }

@@ -1,21 +1,12 @@
-// Copyright (c) 2026 dotandev
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright 2025 Erst Users
+// SPDX-License-Identifier: Apache-2.0
 
 package webhook
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dotandev/hintents/internal/simulator"
@@ -75,13 +66,13 @@ func FormatSlackMessage(report ReportData) SlackMessage {
 		"type": "header",
 		"text": map[string]interface{}{
 			"type": "plain_text",
-			"text": "🔍 ERST Debugging Report",
+			"text": "ERST Debugging Report",
 		},
 	}
 
-	statusEmoji := "❌"
+	statusIcon := "[FAILED]"
 	if report.Status == "success" {
-		statusEmoji = "✅"
+		statusIcon = "[SUCCESS]"
 	}
 
 	summaryBlock := map[string]interface{}{
@@ -90,7 +81,7 @@ func FormatSlackMessage(report ReportData) SlackMessage {
 			"type": "mrkdwn",
 			"text": fmt.Sprintf(
 				"%s *Status:* %s\n*Network:* %s\n*Timestamp:* %s",
-				statusEmoji,
+				statusIcon,
 				report.Status,
 				report.Network,
 				report.Timestamp.Format("2006-01-02 15:04:05 MST"),
@@ -130,16 +121,7 @@ func FormatSlackMessage(report ReportData) SlackMessage {
 
 	// Add diagnostic events summary
 	if len(report.DiagnosticEvents) > 0 {
-		eventsText := fmt.Sprintf("*Events:* %d diagnostic events recorded", len(report.DiagnosticEvents))
-		if len(report.DiagnosticEvents) > 0 && len(report.DiagnosticEvents) <= 3 {
-			eventsText += "\n"
-			for i, evt := range report.DiagnosticEvents {
-				eventsText += fmt.Sprintf("• %s: %s\n", evt.EventType, truncateString(evt.Data, 100))
-				if i >= 2 {
-					break
-				}
-			}
-		}
+		eventsText := formatSlackEventsText(report.DiagnosticEvents)
 		eventsBlock := map[string]interface{}{
 			"type": "section",
 			"text": map[string]interface{}{
@@ -188,9 +170,9 @@ func FormatDiscordMessage(report ReportData) DiscordMessage {
 	color := colorForStatus(report.Status)
 	colorInt := hexToDecimal(color)
 
-	statusTitle := "❌ Simulation Failed"
+	statusTitle := "[FAILED] Simulation Failed"
 	if report.Status == "success" {
-		statusTitle = "✅ Simulation Succeeded"
+		statusTitle = "[SUCCESS] Simulation Succeeded"
 	}
 
 	fields := []DiscordEmbedField{
@@ -227,16 +209,7 @@ func FormatDiscordMessage(report ReportData) DiscordMessage {
 
 	// Add diagnostic events summary
 	if len(report.DiagnosticEvents) > 0 {
-		eventsValue := fmt.Sprintf("Recorded %d diagnostic events", len(report.DiagnosticEvents))
-		if len(report.DiagnosticEvents) <= 3 {
-			eventsValue += "\n"
-			for i, evt := range report.DiagnosticEvents {
-				eventsValue += fmt.Sprintf("• `%s`: %s\n", evt.EventType, truncateString(evt.Data, 80))
-				if i >= 2 {
-					break
-				}
-			}
-		}
+		eventsValue := formatDiscordEventsValue(report.DiagnosticEvents)
 		fields = append(fields, DiscordEmbedField{
 			Name:   "Diagnostic Events",
 			Value:  eventsValue,
@@ -288,7 +261,7 @@ func colorForStatus(status string) string {
 
 func hexToDecimal(hex string) int {
 	var value int
-	fmt.Sscanf(hex, "%x", &value)
+	_, _ = fmt.Sscanf(hex, "%x", &value)
 	return value
 }
 
@@ -297,4 +270,46 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func formatSlackEventsText(events []simulator.DiagnosticEvent) string {
+	var b strings.Builder
+	b.WriteString("*Events:* ")
+	b.WriteString(strconv.Itoa(len(events)))
+	b.WriteString(" diagnostic events recorded")
+	if len(events) <= 3 {
+		b.WriteByte('\n')
+		for i, evt := range events {
+			b.WriteString("• ")
+			b.WriteString(evt.EventType)
+			b.WriteString(": ")
+			b.WriteString(truncateString(evt.Data, 100))
+			b.WriteByte('\n')
+			if i >= 2 {
+				break
+			}
+		}
+	}
+	return b.String()
+}
+
+func formatDiscordEventsValue(events []simulator.DiagnosticEvent) string {
+	var b strings.Builder
+	b.WriteString("Recorded ")
+	b.WriteString(strconv.Itoa(len(events)))
+	b.WriteString(" diagnostic events")
+	if len(events) <= 3 {
+		b.WriteByte('\n')
+		for i, evt := range events {
+			b.WriteString("• `")
+			b.WriteString(evt.EventType)
+			b.WriteString("`: ")
+			b.WriteString(truncateString(evt.Data, 80))
+			b.WriteByte('\n')
+			if i >= 2 {
+				break
+			}
+		}
+	}
+	return b.String()
 }

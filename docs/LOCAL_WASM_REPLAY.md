@@ -26,19 +26,19 @@ erst debug --wasm ./contract.wasm --args "hello" --verbose
 
 ## Features
 
-- ✅ Load WASM files from local filesystem
-- ✅ Mock state provider (no network data required)
-- ✅ Support for mock arguments (Integer and Symbol/String)
-- ✅ Diagnostic logging and event capture
-- ✅ Clear warnings about mock state usage
-- ✅ Full WASM execution
+-  Load WASM files from local filesystem
+-  Mock state provider (no network data required)
+-  Support for mock arguments (Integer and Symbol/String)
+-  Diagnostic logging and event capture
+-  Clear warnings about mock state usage
+-  Full WASM execution
 
 ## Warning
 
 When using the `--wasm` flag, the execution uses **Mock State** and not mainnet data. This is clearly indicated in the output:
 
 ```
-⚠️  WARNING: Using Mock State (not mainnet data)
+[WARN]  WARNING: Using Mock State (not mainnet data)
 ```
 
 This mode is intended for:
@@ -61,22 +61,28 @@ This mode is intended for:
 - Invokes contract function
 - Captures diagnostic events and logs
 
+### Soroban Compatibility & Determinism
+- The simulator enforces Soroban VM compatibility by rejecting WASM binaries
+  that contain floating-point instructions. This prevents non-deterministic
+  execution traces during local replay and keeps behavior aligned with on-chain
+  Soroban restrictions.
+
 ## Example Output
 
 ```
-⚠️  WARNING: Using Mock State (not mainnet data)
+[WARN]  WARNING: Using Mock State (not mainnet data)
 
-🔧 Local WASM Replay Mode
+[TOOL] Local WASM Replay Mode
 WASM File: ./contract.wasm
 Arguments: [hello world]
 
-✓ Initialized Host with diagnostic level: Debug
-✓ Contract registered at: Contract(0000...)
+[OK] Initialized Host with diagnostic level: Debug
+[OK] Contract registered at: Contract(0000...)
 ▶ Invoking function: hello
 
-✓ Execution successful
+[OK] Execution successful
 
-📋 Logs:
+[LIST] Logs:
   Host Budget: [budget details]
   Result: Symbol(world)
 ```
@@ -98,5 +104,4 @@ echo "test" > /tmp/test.wasm
 # Run local replay
 ./erst debug --wasm /tmp/test.wasm --args "test1" --args "test2"
 ```
-
 
