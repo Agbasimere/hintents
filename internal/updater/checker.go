@@ -243,7 +243,7 @@ func (c *Checker) PerformUpdate(ctx context.Context, version string) error {
 	}
 
 	fmt.Printf("Updating to %s via 'go install'...\n", target)
-	
+
 	// Prepare go install command
 	cmd := exec.CommandContext(ctx, "go", "install", target)
 	cmd.Stdout = os.Stdout

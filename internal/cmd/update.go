@@ -28,7 +28,7 @@ You can also specify a target version using the --version flag.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		checker := updater.NewChecker(Version)
-		
+
 		targetVersion := updateVersionFlag
 		if targetVersion == "" {
 			targetVersion = "latest"
