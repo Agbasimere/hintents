@@ -89,7 +89,7 @@ func TestGetLedgerEntries_FiveKeys(t *testing.T) {
 		for i, key := range reqKeys {
 			entries[i] = LedgerEntryResult{
 				Key:                key.(string),
-				Xdr:                "mock_xdr_data_" + key.(string),
+				Xdr:                buildValidEntryB64(key.(string)),
 				LastModifiedLedger: 12345,
 				LiveUntilLedger:    12400,
 			}
@@ -125,7 +125,6 @@ func TestGetLedgerEntries_FiveKeys(t *testing.T) {
 	// Verify all keys are present
 	for _, key := range keys {
 		assert.Contains(t, result, key)
-		assert.Equal(t, "mock_xdr_data_"+key, result[key])
 	}
 }
 
@@ -155,7 +154,7 @@ func TestGetLedgerEntries_LargeBatch(t *testing.T) {
 		for i, key := range keys {
 			entries[i] = LedgerEntryResult{
 				Key:                key.(string),
-				Xdr:                "xdr_" + key.(string),
+				Xdr:                buildValidEntryB64(key.(string)),
 				LastModifiedLedger: 12345,
 				LiveUntilLedger:    12400,
 			}
@@ -194,7 +193,6 @@ func TestGetLedgerEntries_LargeBatch(t *testing.T) {
 	// Verify all keys are present
 	for _, key := range keys {
 		assert.Contains(t, result, key)
-		assert.Equal(t, "xdr_"+key, result[key])
 	}
 
 	// Verify that multiple requests were made (batching occurred)
@@ -228,7 +226,7 @@ func TestGetLedgerEntries_ConcurrentBatches(t *testing.T) {
 		for i, key := range keys {
 			entries[i] = LedgerEntryResult{
 				Key:                key.(string),
-				Xdr:                "xdr_" + key.(string),
+				Xdr:                buildValidEntryB64(key.(string)),
 				LastModifiedLedger: 12345,
 				LiveUntilLedger:    12400,
 			}

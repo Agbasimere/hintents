@@ -539,12 +539,6 @@ type GetLedgerEntriesRequest struct {
 	Params  []interface{} `json:"params"`
 }
 
-type LedgerEntryResult struct {
-	Key                string `json:"key"`
-	Xdr                string `json:"xdr"`
-	LastModifiedLedger int    `json:"lastModifiedLedgerSeq"`
-	LiveUntilLedger    int    `json:"liveUntilLedgerSeq"`
-}
 type GetLedgerEntriesResponse struct {
 	Jsonrpc string `json:"jsonrpc"`
 	ID      int    `json:"id"`
@@ -1031,7 +1025,7 @@ func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keysToFetch []stri
 	}
 
 	// Cryptographically verify all returned ledger entries
-	if err := VerifyLedgerEntries(keysToFetch, entries); err != nil {
+	if err := VerifyLedgerEntries(keysToFetch, rpcResp.Result.Entries); err != nil {
 		return nil, fmt.Errorf("ledger entry verification failed: %w", err)
 	}
 
