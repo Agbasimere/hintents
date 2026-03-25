@@ -1,21 +1,6 @@
-# Copyright (c) Hintents Authors.
-# SPDX-License-Identifier: Apache-2.0
-
-
 #!/bin/bash
 # Copyright 2026 Erst Users
 # SPDX-License-Identifier: Apache-2.0
-
-#!/bin/bash
-# Copyright (c) Hintents Authors.
-# SPDX-License-Identifier: Apache-2.0
-
-#!/bin/bash
-
-# Copyright (c) 2026 dotandev
-# SPDX-License-Identifier: MIT OR Apache-2.0
-
->>>>>>> Stashed changes
 
 # Script to run unused code detection and cleanup
 # This script should be run after resolving the Go toolchain version mismatch
