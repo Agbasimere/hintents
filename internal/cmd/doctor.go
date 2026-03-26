@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/dotandev/hintents/internal/config"
+	"github.com/dotandev/hintents/internal/deeplink"
 	"github.com/dotandev/hintents/internal/rpc"
 
 	"github.com/spf13/cobra"
@@ -58,6 +59,7 @@ This command verifies:
   - Simulator binary (erst-sim)
   - Syntax of TOML config files
   - Reachability of the configured RPC endpoint
+  - Deep link registration (erst:// URL scheme)
 
 Use this to troubleshoot installation issues or verify your setup.`,
 	Example: `  # Check environment status
@@ -94,6 +96,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		checkGoModDependencies(verbose),
 		checkConfigTOML(verbose),
 		checkRPC(verbose),
+		checkDeepLink(verbose),
 	}
 
 	// Print results
@@ -505,6 +508,57 @@ func checkRPC(verbose bool) DependencyStatus {
 	return dep
 }
 
+// checkDeepLink verifies that the erst:// URL scheme is registered with the OS
+// and that dispatching a mock link actually reaches the current binary.
+func checkDeepLink(verbose bool) DependencyStatus {
+	dep := DependencyStatus{
+		Name: "Deep link (erst:// scheme)",
+	}
+
+	selfPath, err := os.Executable()
+	if err != nil {
+		dep.FixHint = "Cannot determine binary path: " + err.Error()
+		return dep
+	}
+
+	result := deeplink.Check(selfPath)
+
+	if result.Err != nil {
+		dep.FixHint = result.Err.Error()
+		if len(result.FixSteps) > 0 {
+			dep.FixHint = result.FixSteps[0]
+		}
+		return dep
+	}
+
+	if !result.Registered {
+		dep.FixHint = buildDeepLinkFixHint(result.FixSteps)
+		return dep
+	}
+
+	if !result.Dispatched {
+		dep.FixHint = "Scheme is registered but dispatch failed. Try: erst install-scheme"
+		if len(result.FixSteps) > 0 {
+			dep.FixHint = result.FixSteps[0]
+		}
+		return dep
+	}
+
+	dep.Installed = true
+	if verbose && result.Handler != "" {
+		dep.Path = result.Handler
+	}
+	dep.Version = "dispatch OK"
+	return dep
+}
+
+func buildDeepLinkFixHint(steps []string) string {
+	if len(steps) == 0 {
+		return "Run 'erst install-scheme' to register the erst:// URL scheme"
+	}
+	return steps[0]
+}
+
 // NEW: runFixers orchestrates automatic fixes with ID-based dispatch (Issues #3, #7, #8)
 func runFixers(deps []DependencyStatus, skipConfirm, verbose bool) error {
 	var failedFixes []string
@@ -547,26 +601,6 @@ func runFixers(deps []DependencyStatus, skipConfirm, verbose bool) error {
 			failedFixes = append(failedFixes, fmt.Sprintf("%s: %v", dep.Name, err))
 		} else {
 			successFixes = append(successFixes, dep.Name)
-		}
-	}
-
-	// NEW: Fix go.mod dependencies (separate confirmation unless --yes is used)
-	goModFixNeeded := false
-	if skipConfirm {
-		// In non-interactive/CI mode, skip prompt and apply fix automatically
-		goModFixNeeded = true
-	} else {
-		fmt.Printf("Fix missing go.mod dependencies? [y/N]: ")
-		reader := bufio.NewReader(os.Stdin)
-		response, _ := reader.ReadString('\n')
-		goModFixNeeded = strings.HasPrefix(strings.ToLower(response), "y")
-	}
-	if goModFixNeeded {
-		err := FixGoModDependencies(verbose)
-		if err != nil {
-			failedFixes = append(failedFixes, fmt.Sprintf("go.mod dependencies: %v", err))
-		} else {
-			successFixes = append(successFixes, "go.mod dependencies")
 		}
 	}
 
