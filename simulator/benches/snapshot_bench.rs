@@ -46,11 +46,15 @@ fn snapshot_overhead_benchmark(c: &mut Criterion) {
     // Benchmark 1000 host function calls WITHOUT snapshots
     group.bench_function("no_snapshots", |b| {
         b.iter_with_setup(
-            || SimHost::new(None, None, None).inner,
-            |host| {
+            || {
+                let sim_host = SimHost::new(None, None, None);
+                sim_host.inner
+            },
+            |host: soroban_env_host::Host| {
                 for _ in 0..1000 {
                     // Call get_ledger_version as a representative "core" host function
-                    let _ = host.get_ledger_version().unwrap();
+                    let _Host = &host;
+                    let _ = _Host.get_ledger_version().unwrap();
                 }
             },
         );
@@ -60,18 +64,21 @@ fn snapshot_overhead_benchmark(c: &mut Criterion) {
     group.bench_function("with_snapshots", |b| {
         b.iter_with_setup(
             || {
-                let host = SimHost::new(None, None, None).inner;
+                let sim_host = SimHost::new(None, None, None);
+                let host = sim_host.inner;
                 // Inject 1000 ledger entries to simulate a snapshot
                 for i in 0..1000 {
                     let (key, entry) = create_dummy_account(i);
-                    // Use the injection method used in the codebase tests
+                    // Standard method for Host v21 or similar
+                    // Using the existing pattern from main_test.rs if it's available.
                     let _ = host.put_ledger_entry(key, entry);
                 }
                 host
             },
-            |host| {
+            |host: soroban_env_host::Host| {
                 for _ in 0..1000 {
-                    let _ = host.get_ledger_version().unwrap();
+                    let _Host = &host;
+                    let _ = _Host.get_ledger_version().unwrap();
                 }
             },
         );
