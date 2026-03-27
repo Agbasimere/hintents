@@ -141,13 +141,58 @@ export function registerProtocolCommands(program: Command): void {
         .action(async () => {
             try {
                 const registrar = new ProtocolRegistrar();
-                const isRegistered = await registrar.isRegistered();
+                const diag = await registrar.diagnose();
+                const executableFix = process.platform === 'win32'
+                    ? 'Ensure the registered file is a runnable .exe, .cmd, .bat, or .com binary'
+                    : `Restore execute permissions, for example: chmod +x ${diag.cliPath ?? '<path>'}`;
 
-                if (isRegistered) {
-                    console.log(' ERST protocol handler is currently REGISTERED');
-                } else {
-                    console.log('[FAIL] ERST protocol handler is NOT REGISTERED');
-                    console.log('Run "erst protocol:register" to enable dashboard integration.');
+                console.log('ERST Protocol Handler Status');
+                console.log('----------------------------');
+                console.log(`Registered Path: ${diag.cliPath ?? '(not registered)'}`);
+
+                if (!diag.registered) {
+                    console.log('Registration:    NOT REGISTERED');
+                    console.log('Path Exists:     No');
+                    console.log('Executable:      No');
+                    console.log('');
+                    console.log('Fix:');
+                    console.log('  - Run "erst protocol:register" to enable dashboard integration');
+                    return;
+                }
+
+                console.log('Registration:    REGISTERED');
+                console.log(`Path Exists:     ${diag.pathExists ? 'Yes' : 'No'}`);
+                console.log(`Executable:      ${!diag.pathExists ? 'No' : diag.isExecutable ? 'Yes' : 'No'}`);
+
+                const issues: string[] = [];
+                const fixes: string[] = [];
+
+                if (!diag.cliPath) {
+                    issues.push('Could not determine registered CLI path');
+                    fixes.push('Re-run "erst protocol:register" to refresh registration');
+                } else if (!diag.pathExists) {
+                    issues.push(`Binary not found at ${diag.cliPath}`);
+                    fixes.push(`Ensure the erst binary exists at ${diag.cliPath}`);
+                    fixes.push('Re-run "erst protocol:register" to update the registered path');
+                } else if (!diag.isExecutable) {
+                    issues.push(`Binary at ${diag.cliPath} is not executable`);
+                    fixes.push(executableFix);
+                    fixes.push('Re-run "erst protocol:register" if the binary moved or was replaced');
+                }
+
+                if (issues.length === 0) {
+                    console.log('[OK] Registered CLI is usable.');
+                    return;
+                }
+
+                console.log('');
+                for (const issue of issues) {
+                    console.log(`[FAIL] ${issue}`);
+                }
+                console.log('');
+                console.log('Fix:');
+                for (const fix of fixes) {
+                    console.log(`  - ${fix}`);
                 }
             } catch (error) {
                 if (error instanceof Error) {
