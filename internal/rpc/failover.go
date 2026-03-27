@@ -94,6 +94,52 @@ func (c *Client) markSuccess(url string) {
 	c.failures[url] = 0
 }
 
+// markHorizonFailure atomically records a failure for the current Horizon URL.
+func (c *Client) markHorizonFailure() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.markFailureLocked(c.HorizonURL)
+}
+
+// markHorizonSuccess resets the failure count for the current Horizon URL.
+func (c *Client) markHorizonSuccess() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.markSuccessLocked(c.HorizonURL)
+}
+
+// markSorobanFailure atomically records a failure for the current Soroban URL.
+func (c *Client) markSorobanFailure() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.markFailureLocked(c.SorobanURL)
+}
+
+// markSorobanSuccess resets the failure count for the current Soroban URL.
+func (c *Client) markSorobanSuccess() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.markSuccessLocked(c.SorobanURL)
+}
+
+func (c *Client) markFailureLocked(url string) {
+	if c.failures == nil {
+		c.failures = make(map[string]int)
+	}
+	if c.lastFailure == nil {
+		c.lastFailure = make(map[string]time.Time)
+	}
+	c.failures[url]++
+	c.lastFailure[url] = time.Now()
+}
+
+func (c *Client) markSuccessLocked(url string) {
+	if c.failures == nil {
+		c.failures = make(map[string]int)
+	}
+	c.failures[url] = 0
+}
+
 // rotateURL switches to the next available provider URL, skipping unhealthy ones if possible
 func (c *Client) rotateURL() bool {
 	c.mu.Lock()
