@@ -79,8 +79,3 @@ else
 fi
 
 echo "All validation checks passed!"
-echo "Error standardization complete:"
-echo "   - Sentinel errors defined for comparison with errors.Is"
-echo "   - Wrap functions follow Go error wrapping best practices"
-echo "   - All packages refactored to use standardized errors"
-echo "   - Tests updated to use standardized error constants"
