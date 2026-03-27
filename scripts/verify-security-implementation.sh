@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verification script for security vulnerability detection implementation
-
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,12 +45,3 @@ ls -lh internal/security/README.md docs/security-quick-reference.md SECURITY_IMP
 echo
 
 echo "=== Verification Complete ==="
-echo
-echo "Summary:"
-echo "  - 7 new files created"
-echo "  - 1 file modified (internal/cmd/debug.go)"
-echo "  - 10/10 tests passing"
-echo "  - 6 vulnerability checks implemented"
-echo "  - Clear distinction between VERIFIED_RISK and HEURISTIC_WARNING"
-echo
-echo "Ready for PR submission!"
