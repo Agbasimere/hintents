@@ -230,5 +230,8 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
+      - name: Run benchmarks
+        run: cargo bench --bench snapshot_bench -- --test
+
       - name: Build
         run: cargo build --verbose

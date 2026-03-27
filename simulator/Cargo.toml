@@ -49,3 +49,8 @@ libc = "0.2"
 tempfile = "3.26.0"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 wat = "1"
+criterion = { version = "0.5", features = ["csv_output"] }
+
+[[bench]]
+name = "snapshot_bench"
+harness = false
