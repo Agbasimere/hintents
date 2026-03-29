@@ -256,7 +256,7 @@ func (c *Client) getTransactionAttempt(ctx context.Context, hash string) (txResp
 		attribute.Int("result_meta.size_bytes", len(tx.ResultMetaXdr)),
 	)
 
-	logger.Logger.Info("Transaction fetched", "hash", hash, "envelope_size", len(tx.EnvelopeXdr), "url", c.HorizonURL)
+	logger.Logger.Debug("Transaction fetched", "hash", hash, "envelope_size", len(tx.EnvelopeXdr), "url", c.HorizonURL)
 
 	return ParseTransactionResponse(tx), nil
 }
@@ -350,7 +350,7 @@ func (c *Client) getLedgerHeaderAttempt(ctx context.Context, sequence uint32) (l
 		attribute.Int("ledger.tx_count", int(response.SuccessfulTxCount+response.FailedTxCount)),
 	)
 
-	logger.Logger.Info("Ledger header fetched successfully",
+	logger.Logger.Debug("Ledger header fetched successfully",
 		"sequence", sequence,
 		"hash", response.Hash,
 		"url", c.HorizonURL,
@@ -433,6 +433,211 @@ func IsResponseTooLarge(err error) bool {
 }
 
 
+	results := make(chan batchResult, len(batches))
+	var wg sync.WaitGroup
+
+	// Create a context with timeout for all concurrent requests
+	batchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	logger.Logger.Debug("Fetching ledger entries concurrently",
+		"batch_count", len(batches),
+		"total_keys", sumBatchSizes(batches))
+
+	for _, batch := range batches {
+		wg.Add(1)
+		go func(keys []string) {
+			defer wg.Done()
+
+			// Attempt with failover for each batch
+			var entries map[string]string
+			var err error
+			for attempt := 0; attempt < len(c.AltURLs); attempt++ {
+				entries, err = c.getLedgerEntriesAttempt(batchCtx, keys)
+				if err == nil {
+					break
+				}
+				if attempt < len(c.AltURLs)-1 {
+					logger.Logger.Warn("Batch request failed, trying next URL", "error", err)
+					c.rotateURL()
+				}
+			}
+
+			results <- batchResult{entries: entries, err: err}
+		}(batch)
+	}
+
+	// Wait for all goroutines to complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
+	allEntries := make(map[string]string)
+	var errs []error
+
+	for result := range results {
+		if result.err != nil {
+			errs = append(errs, result.err)
+			span.RecordError(result.err)
+		} else {
+			for k, v := range result.entries {
+				allEntries[k] = v
+			}
+		}
+	}
+
+	// If any batch failed, return error
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("failed to fetch %d/%d batches: %v", len(errs), len(batches), errs[0])
+	}
+
+	logger.Logger.Debug("Concurrent ledger entry fetch completed",
+		"total_entries", len(allEntries),
+		"batches", len(batches))
+
+	return allEntries, nil
+}
+
+// sumBatchSizes calculates total number of keys across all batches
+func sumBatchSizes(batches [][]string) int {
+	total := 0
+	for _, batch := range batches {
+		total += len(batch)
+	}
+	return total
+}
+
+func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keysToFetch []string) (entries map[string]string, err error) {
+	// Always use the dedicated Soroban RPC URL for getLedgerEntries; this is a
+	// Soroban JSON-RPC method and is not served by the Horizon REST API.
+	targetURL := c.SorobanURL
+	if targetURL == "" {
+		switch c.Network {
+		case Testnet:
+			targetURL = TestnetSorobanURL
+		case Mainnet:
+			targetURL = MainnetSorobanURL
+		case Futurenet:
+			targetURL = FuturenetSorobanURL
+		}
+	}
+
+	timer := c.startMethodTimer(ctx, "rpc.get_ledger_entries", map[string]string{
+		"network": c.GetNetworkName(),
+		"rpc_url": targetURL,
+	})
+	defer func() {
+		timer.Stop(err)
+	}()
+
+	logger.Logger.Debug("Fetching ledger entries", "count", len(keysToFetch), "url", targetURL)
+
+	startTime := time.Now()
+	// Fail fast if circuit breaker is open for this Soroban endpoint.
+	if !c.isHealthy(targetURL) {
+		err := errors.WrapRPCConnectionFailed(
+			fmt.Errorf("circuit breaker open for %s", targetURL),
+		)
+		// Record failed remote node response
+		metrics.RecordRemoteNodeResponse(targetURL, string(c.Network), false, time.Since(startTime))
+
+		return nil, err
+	}
+
+	reqBody := GetLedgerEntriesRequest{
+		Jsonrpc: "2.0",
+		ID:      1,
+		Method:  "getLedgerEntries",
+		Params:  []interface{}{keysToFetch},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, errors.WrapMarshalFailed(err)
+	}
+
+	// Validate payload size before attempting to send to network
+	if err := ValidatePayloadSize(int64(len(bodyBytes))); err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return nil, errors.WrapRPCConnectionFailed(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.getHTTPClient().Do(req)
+	duration := time.Since(startTime)
+	if err != nil {
+		logger.Logger.Error("Soroban getLedgerEntries request failed", "url", targetURL, "error", err)
+		// Record failed remote node response
+		metrics.RecordRemoteNodeResponse(targetURL, string(c.Network), false, duration)
+		return nil, errors.WrapRPCConnectionFailed(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusRequestEntityTooLarge {
+		// Record failed remote node response
+		metrics.RecordRemoteNodeResponse(targetURL, string(c.Network), false, duration)
+		return nil, errors.WrapRPCResponseTooLarge(targetURL)
+	}
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		// Record failed remote node response
+		metrics.RecordRemoteNodeResponse(targetURL, string(c.Network), false, duration)
+		return nil, errors.WrapUnmarshalFailed(err, "body read error")
+	}
+
+	var rpcResp GetLedgerEntriesResponse
+	if err := json.Unmarshal(respBytes, &rpcResp); err != nil {
+		logger.Logger.Error("Soroban getLedgerEntries response unmarshal failed", "url", targetURL, "error", err)
+		// Record failed remote node response
+		metrics.RecordRemoteNodeResponse(targetURL, string(c.Network), false, duration)
+		return nil, errors.WrapUnmarshalFailed(err, string(respBytes))
+	}
+
+	if rpcResp.Error != nil {
+		logger.Logger.Error("Soroban getLedgerEntries RPC error", "url", targetURL, "code", rpcResp.Error.Code, "message", rpcResp.Error.Message)
+		// Record failed remote node response
+		metrics.RecordRemoteNodeResponse(targetURL, string(c.Network), false, duration)
+		return nil, errors.WrapSorobanError(targetURL, rpcResp.Error.Message, rpcResp.Error.Code)
+	}
+
+	// Record successful remote node response
+	metrics.RecordRemoteNodeResponse(targetURL, string(c.Network), true, duration)
+
+	entries = make(map[string]string)
+	fetchedCount := 0
+	for _, entry := range rpcResp.Result.Entries {
+		entries[entry.Key] = entry.Xdr
+		fetchedCount++
+
+		// Cache the new entry
+		if c.CacheEnabled {
+			if err := Set(entry.Key, entry.Xdr); err != nil {
+				logger.Logger.Warn("Failed to cache entry", "key", entry.Key, "error", err)
+			}
+		}
+	}
+
+	// Cryptographically verify all returned ledger entries
+	if err := VerifyLedgerEntries(keysToFetch, entries); err != nil {
+		return nil, fmt.Errorf("ledger entry verification failed: %w", err)
+	}
+
+	logger.Logger.Debug("Ledger entries fetched",
+		"total_requested", len(keysToFetch),
+		"from_cache", len(keysToFetch)-fetchedCount,
+		"from_rpc", fetchedCount,
+		"url", targetURL,
+	)
+
+	return entries, nil
+}
 
 type TransactionSummary struct {
 	Hash      string
@@ -579,3 +784,315 @@ func getTransactionStatus(tx hProtocol.Transaction) string {
 }
 
 
+		if len(c.AltURLs) <= 1 {
+			return nil, err
+		}
+	}
+	return nil, &AllNodesFailedError{Failures: failures}
+}
+
+func (c *Client) simulateTransactionAttempt(ctx context.Context, envelopeXdr string) (simResp *SimulateTransactionResponse, err error) {
+	// Always use the dedicated Soroban RPC URL for simulateTransaction; this is a
+	// Soroban JSON-RPC method and is not served by the Horizon REST API.
+	targetURL := c.SorobanURL
+	if targetURL == "" {
+		switch c.Network {
+		case Testnet:
+			targetURL = TestnetSorobanURL
+		case Mainnet:
+			targetURL = MainnetSorobanURL
+		case Futurenet:
+			targetURL = FuturenetSorobanURL
+		}
+	}
+
+	timer := c.startMethodTimer(ctx, "rpc.simulate_transaction", map[string]string{
+		"network": c.GetNetworkName(),
+		"rpc_url": targetURL,
+	})
+	defer func() {
+		timer.Stop(err)
+	}()
+
+	logger.Logger.Debug("Simulating transaction (preflight)", "url", targetURL)
+
+	// Fail fast if circuit breaker is open for this Soroban endpoint.
+	if !c.isHealthy(targetURL) {
+		return nil, errors.WrapRPCConnectionFailed(
+			fmt.Errorf("circuit breaker open for %s", targetURL),
+		)
+	}
+
+	reqBody := SimulateTransactionRequest{
+		Jsonrpc: "2.0",
+		ID:      1,
+		Method:  "simulateTransaction",
+		Params:  []interface{}{envelopeXdr},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, errors.WrapMarshalFailed(err)
+	}
+
+	// Validate payload size before attempting to send to network
+	if err := ValidatePayloadSize(int64(len(bodyBytes))); err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return nil, errors.WrapRPCConnectionFailed(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.getHTTPClient().Do(req)
+	if err != nil {
+		logger.Logger.Error("Soroban simulateTransaction request failed", "url", targetURL, "error", err)
+		return nil, errors.WrapRPCConnectionFailed(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusRequestEntityTooLarge {
+		logger.Logger.Error("Soroban simulateTransaction response too large", "url", targetURL, "status", resp.StatusCode)
+		return nil, errors.WrapRPCResponseTooLarge(targetURL)
+	}
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Logger.Error("Soroban simulateTransaction response read failed", "url", targetURL, "error", err)
+		return nil, errors.WrapUnmarshalFailed(err, "body read error")
+	}
+
+	var rpcResp SimulateTransactionResponse
+	if err := json.Unmarshal(respBytes, &rpcResp); err != nil {
+		logger.Logger.Error("Soroban simulateTransaction unmarshal failed", "url", targetURL, "error", err)
+		return nil, errors.WrapUnmarshalFailed(err, string(respBytes))
+	}
+
+	if rpcResp.Error != nil {
+		logger.Logger.Error("Soroban simulateTransaction RPC error", "url", targetURL, "code", rpcResp.Error.Code, "message", rpcResp.Error.Message)
+		return nil, errors.WrapSorobanError(targetURL, rpcResp.Error.Message, rpcResp.Error.Code)
+	}
+
+	logger.Logger.Debug("Soroban simulateTransaction succeeded", "url", targetURL)
+	return &rpcResp, nil
+}
+
+// GetHealth checks the health of the Soroban RPC endpoint.
+func (c *Client) GetHealth(ctx context.Context) (*GetHealthResponse, error) {
+	attempts := c.endpointAttempts()
+	var failures []NodeFailure
+	for attempt := 0; attempt < attempts; attempt++ {
+		resp, err := c.getHealthAttempt(ctx)
+		if err == nil {
+			c.markSorobanSuccess()
+			return resp, nil
+		}
+
+		c.markSorobanFailure()
+		failures = append(failures, NodeFailure{URL: c.SorobanURL, Reason: err})
+
+		if attempt < attempts-1 && len(c.AltURLs) > 1 {
+			logger.Logger.Warn("Retrying GetHealth with fallback RPC...", "error", err)
+			if !c.rotateURL() {
+				break
+			}
+			continue
+		}
+	}
+	return nil, &AllNodesFailedError{Failures: failures}
+}
+
+func (c *Client) getHealthAttempt(ctx context.Context) (healthResp *GetHealthResponse, err error) {
+	targetURL := c.SorobanURL
+	if targetURL == "" {
+		targetURL = c.HorizonURL
+	}
+	timer := c.startMethodTimer(ctx, "rpc.get_health", map[string]string{
+		"network": c.GetNetworkName(),
+		"rpc_url": targetURL,
+	})
+	defer func() {
+		timer.Stop(err)
+	}()
+
+	logger.Logger.Debug("Checking Soroban RPC health", "url", targetURL)
+
+	// Fail fast if circuit breaker is open for this Soroban endpoint.
+	if !c.isHealthy(targetURL) {
+		return nil, errors.NewRPCError(errors.CodeRPCConnectionFailed,
+			fmt.Errorf("circuit breaker open for %s", targetURL),
+		)
+	}
+
+	reqBody := GetHealthRequest{
+		Jsonrpc: "2.0",
+		ID:      1,
+		Method:  "getHealth",
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, errors.NewRPCError(errors.CodeRPCMarshalFailed, err)
+	}
+
+	// Prefer SorobanURL but fall back to the currently active HorizonURL so that
+	// rotateURL-triggered failovers are reflected in health checks.
+	targetURL = c.SorobanURL
+	if targetURL == "" {
+		targetURL = c.HorizonURL
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return nil, errors.NewRPCError(errors.CodeRPCConnectionFailed, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.getHTTPClient().Do(req)
+	if err != nil {
+		logger.Logger.Error("Soroban getHealth request failed", "url", targetURL, "error", err)
+		return nil, errors.NewRPCError(errors.CodeRPCConnectionFailed, err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Logger.Error("Soroban getHealth response read failed", "url", targetURL, "error", err)
+		return nil, errors.NewRPCError(errors.CodeRPCUnmarshalFailed, err)
+	}
+
+	var rpcResp GetHealthResponse
+	if err := json.Unmarshal(respBytes, &rpcResp); err != nil {
+		logger.Logger.Error("Soroban getHealth unmarshal failed", "url", targetURL, "error", err)
+		return nil, errors.NewRPCError(errors.CodeRPCUnmarshalFailed, err)
+	}
+
+	if rpcResp.Error != nil {
+		logger.Logger.Error("Soroban getHealth RPC error", "url", targetURL, "code", rpcResp.Error.Code, "message", rpcResp.Error.Message)
+		return nil, errors.NewRPCError(errors.CodeRPCError, fmt.Errorf("rpc error from %s: %s (code %d)", targetURL, rpcResp.Error.Message, rpcResp.Error.Code))
+	}
+
+	logger.Logger.Debug("Soroban RPC health check successful", "url", targetURL, "status", rpcResp.Result.Status)
+	return &rpcResp, nil
+}
+
+//  Warn if RPC node is lagging behind current ledge
+
+func (c *Client) postRequest(ctx context.Context, payload interface{}, result interface{}) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Use c.SorobanURL as the endpoint
+	req, err := http.NewRequestWithContext(ctx, "POST", c.SorobanURL, bytes.NewBuffer(data))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Use the client's internal httpClient
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("http request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	return json.NewDecoder(resp.Body).Decode(result)
+}
+
+// GetLatestLedgerSequence fetches the latest ledger from the node this client is configured for.
+func (c *Client) GetLatestLedgerSequence(ctx context.Context) (int, error) {
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getLatestLedger",
+	}
+
+	var resp GetLatestLedgerResponse
+	err := c.postRequest(ctx, payload, &resp)
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Result.Sequence, nil
+}
+
+func fetchLatestFromSDF(ctx context.Context, url string) (int, error) {
+	// 1. Prepare the JSON-RPC payload
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getLatestLedger",
+	}
+	body, _ := json.Marshal(payload)
+
+	// 2. Create the request with a strict timeout
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	// 3. Decode using the struct you found earlier
+	var rpcResp GetLatestLedgerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		return 0, err
+	}
+
+	if rpcResp.Error != nil {
+		return 0, fmt.Errorf("RPC error: %s", rpcResp.Error.Message)
+	}
+
+	return rpcResp.Result.Sequence, nil
+}
+
+func (c *Client) CheckStaleness(ctx context.Context, network string) error {
+	// 1. Get the ledger sequence from the user's configured RPC (the local node)
+	localLedger, err := c.GetLatestLedgerSequence(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get local ledger: %w", err)
+	}
+
+	// 2. Determine the official reference URL based on the network
+	var referenceURL string
+	switch strings.ToLower(network) {
+	case "testnet":
+		referenceURL = "https://soroban-testnet.stellar.org"
+	case "public":
+		referenceURL = "https://soroban.stellar.org"
+	default:
+		// Skip check for 'standalone' or unknown networks
+		return nil
+	}
+
+	// 3. Fetch the latest ledger from the official SDF reference node
+	refLedger, err := fetchLatestFromSDF(ctx, referenceURL)
+	if err != nil {
+		// We don't want to block the tool if the internet is down,
+		// just log it and move on.
+		return nil
+	}
+
+	// 4. Compare
+	const threshold = 15 // ~1.5 minutes of lag
+	if refLedger > localLedger+threshold {
+		fmt.Printf("\033[33m[WARN]\033[0m Local node is lagging! (Local: %d, Network: %d). \n", localLedger, refLedger)
+		fmt.Println("       Traces and replays might use outdated contract state.")
+	}
+
+	return nil
+}
