@@ -1363,6 +1363,10 @@ func runFromRegistry(ctx context.Context, path string) error {
 		return errors.WrapValidationError("snapshot registry contains no entries")
 	}
 
+	for _, w := range reg.VerifyIntegrity() {
+		fmt.Fprintf(os.Stderr, "Warning: integrity check failed: %s\n", w.Error())
+	}
+
 	fmt.Printf("Offline replay: %s\n", reg.TxHash)
 	fmt.Printf("Network: %s | Created: %s | Entries: %d\n",
 		reg.Network, reg.CreatedAt.Format(time.RFC3339), len(reg.Entries))
