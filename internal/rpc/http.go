@@ -49,30 +49,19 @@ func (c *Client) getHTTPClient() *http.Client {
 func createHTTPClient(token string, timeout time.Duration, middlewares ...Middleware) *http.Client {
 	cfg := DefaultRetryConfig()
 
-	var baseTransport http.RoundTripper = http.DefaultTransport
-
-	var transport http.RoundTripper = baseTransport
+	var transport http.RoundTripper = http.DefaultTransport
 	if token != "" {
 		transport = &authTransport{
 			token:     token,
-			transport: baseTransport,
-		}
-	}
-
-	// Apply custom middlewares before the retry transport if you want retries to apply to them,
-	// or after if you want them to wrap the retries.
-	// Usually middlewares wrap the transport.
-	for _, mw := range middlewares {
-		if mw != nil {
-			transport = mw(transport)
+			transport: transport,
 		}
 	}
 
 	transport = NewRetryTransport(cfg, transport)
 
-	// Apply custom middlewares
-	for _, mw := range middlewares {
-		if mw != nil {
+	// Apply custom middlewares in reverse order so the first one becomes outermost
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		if mw := middlewares[i]; mw != nil {
 			transport = mw(transport)
 		}
 	}

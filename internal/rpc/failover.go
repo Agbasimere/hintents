@@ -49,7 +49,7 @@ func (c *Client) endpointAttempts() int {
 }
 
 // isHealthy checks if an endpoint is currently healthy or if circuit is open.
-// This is a best-effort check — there is an intentional TOCTOU window between
+// This is a best-effort check â€” there is an intentional TOCTOU window between
 // this call and the subsequent http.Do; no lock is held across both operations
 // because doing so would risk deadlocks with rotateURL. The circuit breaker is
 // an optimistic fast-path, not a hard guarantee.
@@ -75,6 +75,44 @@ func (c *Client) isHealthyLocked(url string) bool {
 func (c *Client) markFailure(url string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.markFailureLocked(url)
+}
+
+func (c *Client) markSuccess(url string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.markSuccessLocked(url)
+}
+
+// markHorizonFailure atomically reads HorizonURL and records a failure.
+func (c *Client) markHorizonFailure() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.markFailureLocked(c.HorizonURL)
+}
+
+// markHorizonSuccess atomically reads HorizonURL and clears its failure state.
+func (c *Client) markHorizonSuccess() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.markSuccessLocked(c.HorizonURL)
+}
+
+// markSorobanFailure atomically reads SorobanURL and records a failure.
+func (c *Client) markSorobanFailure() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.markFailureLocked(c.SorobanURL)
+}
+
+// markSorobanSuccess atomically reads SorobanURL and clears its failure state.
+func (c *Client) markSorobanSuccess() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.markSuccessLocked(c.SorobanURL)
+}
+
+func (c *Client) markFailureLocked(url string) {
 	if c.failures == nil {
 		c.failures = make(map[string]int)
 	}
@@ -85,13 +123,15 @@ func (c *Client) markFailure(url string) {
 	c.lastFailure[url] = time.Now()
 }
 
-func (c *Client) markSuccess(url string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *Client) markSuccessLocked(url string) {
 	if c.failures == nil {
 		c.failures = make(map[string]int)
 	}
-	c.failures[url] = 0
+	if c.lastFailure == nil {
+		c.lastFailure = make(map[string]time.Time)
+	}
+	delete(c.failures, url)
+	delete(c.lastFailure, url)
 }
 
 // rotateURL switches to the next available provider URL, skipping unhealthy ones if possible
@@ -117,21 +157,19 @@ func (c *Client) rotateURL() bool {
 	}
 
 	c.HorizonURL = c.AltURLs[c.currIndex]
-	// Keep SorobanURL in sync with HorizonURL when they were previously identical
-	// so that health checks and Soroban RPC calls reflect the failover.
-	if c.SorobanURL != "" {
-		c.SorobanURL = c.HorizonURL
-	}
+	// Keep SorobanURL in sync with HorizonURL so that health checks and Soroban RPC
+	// calls reflect the failover.
 	c.SorobanURL = c.HorizonURL
+
 	httpClient := c.httpClient
 	if httpClient == nil {
 		httpClient = createHTTPClient(c.token, defaultHTTPTimeout, c.middlewares...)
 	}
+
 	c.Horizon = &horizonclient.Client{
 		HorizonURL: c.HorizonURL,
 		HTTP:       httpClient,
 	}
-	c.SorobanURL = c.AltURLs[c.currIndex]
 
 	logger.Logger.Warn("RPC failover triggered", "new_url", c.HorizonURL)
 	// increment counter under the same lock so readers get a consistent view
@@ -146,12 +184,4 @@ func (c *Client) RotateCount() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.rotateCount
-}
-
-// attempts returns the number of retry attempts for failover loops (at least 1)
-func (c *Client) attempts() int {
-	if len(c.AltURLs) == 0 {
-		return 1
-	}
-	return len(c.AltURLs)
 }
