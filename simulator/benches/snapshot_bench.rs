@@ -1,12 +1,17 @@
 // Copyright 2026 Erst Users
 // SPDX-License-Identifier: Apache-2.0
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use simulator::runner::SimHost;
-use soroban_env_host::xdr::{
-    AccountEntry, AccountId, LedgerEntry, LedgerEntryData, LedgerEntryExt, LedgerKey,
-    LedgerKeyAccount, PublicKey, SequenceNumber, Thresholds, Uint256, String32, StringM,
+use criterion::{criterion_group, criterion_main, Criterion};
+use soroban_env_host::{
+    budget::Budget,
+    storage::{AccessType, Footprint, Storage},
+    xdr::{
+        AccountEntry, AccountId, LedgerEntry, LedgerEntryData, LedgerEntryExt, LedgerKey,
+        LedgerKeyAccount, PublicKey, SequenceNumber, String32, StringM, Thresholds, Uint256,
+    },
+    DiagnosticLevel, Host, LedgerInfo, MeteredOrdMap,
 };
+use std::rc::Rc;
 use std::str::FromStr;
 
 /// Helper to create a dummy account key and entry for benchmarking
@@ -31,7 +36,7 @@ fn create_dummy_account(i: u32) -> (LedgerKey, LedgerEntry) {
             flags: 0,
             home_domain: String32(StringM::from_str("bench.com").unwrap()),
             thresholds: Thresholds([1, 0, 0, 0]),
-            signers: Default::default(),
+            signers: soroban_env_host::xdr::VecM::default(),
             ext: soroban_env_host::xdr::AccountEntryExt::V0,
         }),
         ext: LedgerEntryExt::V0,
@@ -40,21 +45,61 @@ fn create_dummy_account(i: u32) -> (LedgerKey, LedgerEntry) {
     (key, entry)
 }
 
+fn create_host(entry_count: u32) -> Host {
+    let budget = Budget::default();
+    let entries: Vec<(Rc<LedgerKey>, Rc<LedgerEntry>)> = (0..entry_count)
+        .map(|i| {
+            let (key, entry) = create_dummy_account(i);
+            (Rc::new(key), Rc::new(entry))
+        })
+        .collect();
+
+    let footprint = Footprint(
+        MeteredOrdMap::from_exact_iter(
+            entries
+                .iter()
+                .map(|(key, _)| (Rc::clone(key), AccessType::ReadOnly)),
+            &budget,
+        )
+        .unwrap(),
+    );
+    let storage_map = MeteredOrdMap::from_exact_iter(
+        entries
+            .iter()
+            .map(|(key, entry)| (Rc::clone(key), Some((Rc::clone(entry), None)))),
+        &budget,
+    )
+    .unwrap();
+
+    let host = Host::with_storage_and_budget(
+        Storage::with_enforcing_footprint_and_map(footprint, storage_map),
+        budget,
+    );
+    host.set_ledger_info(LedgerInfo {
+        protocol_version: 25,
+        sequence_number: 1,
+        timestamp: 0,
+        network_id: [0; 32],
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6_312_000,
+    })
+    .unwrap();
+    host.set_diagnostic_level(DiagnosticLevel::Debug).unwrap();
+    host
+}
+
 fn snapshot_overhead_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("snapshot_overhead");
-    
+
     // Benchmark 1000 host function calls WITHOUT snapshots
     group.bench_function("no_snapshots", |b| {
         b.iter_with_setup(
-            || {
-                let sim_host = SimHost::new(None, None, None);
-                sim_host.inner
-            },
-            |host: soroban_env_host::Host| {
+            || create_host(0),
+            |host: Host| {
                 for _ in 0..1000 {
-                    // Call get_ledger_version as a representative "core" host function
-                    let _Host = &host;
-                    let _ = _Host.get_ledger_version().unwrap();
+                    let _ = host.get_ledger_protocol_version().unwrap();
                 }
             },
         );
@@ -63,22 +108,10 @@ fn snapshot_overhead_benchmark(c: &mut Criterion) {
     // Benchmark 1000 host function calls WITH snapshots (1000 injected entries)
     group.bench_function("with_snapshots", |b| {
         b.iter_with_setup(
-            || {
-                let sim_host = SimHost::new(None, None, None);
-                let host = sim_host.inner;
-                // Inject 1000 ledger entries to simulate a snapshot
-                for i in 0..1000 {
-                    let (key, entry) = create_dummy_account(i);
-                    // Standard method for Host v21 or similar
-                    // Using the existing pattern from main_test.rs if it's available.
-                    let _ = host.put_ledger_entry(key, entry);
-                }
-                host
-            },
-            |host: soroban_env_host::Host| {
+            || create_host(1000),
+            |host: Host| {
                 for _ in 0..1000 {
-                    let _Host = &host;
-                    let _ = _Host.get_ledger_version().unwrap();
+                    let _ = host.get_ledger_protocol_version().unwrap();
                 }
             },
         );

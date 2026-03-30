@@ -59,19 +59,12 @@ func createHTTPClient(token string, timeout time.Duration, middlewares ...Middle
 		}
 	}
 
-	// Apply custom middlewares before the retry transport if you want retries to apply to them,
-	// or after if you want them to wrap the retries.
-	// Usually middlewares wrap the transport.
-	for _, mw := range middlewares {
-		if mw != nil {
-			transport = mw(transport)
-		}
-	}
-
 	transport = NewRetryTransport(cfg, transport)
 
-	// Apply custom middlewares
-	for _, mw := range middlewares {
+	// Apply custom middlewares once so the first middleware provided by the
+	// caller becomes the outermost wrapper around the retry transport.
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		mw := middlewares[i]
 		if mw != nil {
 			transport = mw(transport)
 		}
