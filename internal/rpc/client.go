@@ -258,7 +258,7 @@ func (c *Client) getTransactionAttempt(ctx context.Context, hash string) (txResp
 		attribute.Int("result_meta.size_bytes", len(tx.ResultMetaXdr)),
 	)
 
-	logger.Logger.Info("Transaction fetched", "hash", hash, "envelope_size", len(tx.EnvelopeXdr), "url", c.HorizonURL)
+	logger.Logger.Debug("Transaction fetched", "hash", hash, "envelope_size", len(tx.EnvelopeXdr), "url", c.HorizonURL)
 
 	return ParseTransactionResponse(tx), nil
 }
