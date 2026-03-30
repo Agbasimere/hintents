@@ -101,9 +101,6 @@ type Client struct {
 	rotateCount int
 }
 
-
-
-
 // NewClientDefault creates a new RPC client with sensible defaults
 // Uses the Mainnet by default and accepts optional environment token
 // Deprecated: Use NewClient with functional options instead
@@ -144,7 +141,6 @@ func (c *Client) startMethodTimer(ctx context.Context, method string, attributes
 	}
 	return c.methodTelemetry.StartMethodTimer(ctx, method, attributes)
 }
-
 
 // NewCustomClient creates a new RPC client for a custom/private network
 // Deprecated: Use NewClient with WithNetworkConfig instead
