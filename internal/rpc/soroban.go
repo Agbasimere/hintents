@@ -195,7 +195,7 @@ func (c *Client) getLedgerEntriesConcurrent(ctx context.Context, batches [][]str
 	batchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	logger.Logger.Info("Fetching ledger entries concurrently",
+	logger.Logger.Debug("Fetching ledger entries concurrently",
 		"batch_count", len(batches),
 		"total_keys", sumBatchSizes(batches))
 
@@ -248,7 +248,7 @@ func (c *Client) getLedgerEntriesConcurrent(ctx context.Context, batches [][]str
 		return nil, fmt.Errorf("failed to fetch %d/%d batches: %v", len(errs), len(batches), errs[0])
 	}
 
-	logger.Logger.Info("Concurrent ledger entry fetch completed",
+	logger.Logger.Debug("Concurrent ledger entry fetch completed",
 		"total_entries", len(allEntries),
 		"batches", len(batches))
 
@@ -268,16 +268,6 @@ func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keysToFetch []stri
 	// Always use the dedicated Soroban RPC URL for getLedgerEntries; this is a
 	// Soroban JSON-RPC method and is not served by the Horizon REST API.
 	targetURL := c.SorobanURL
-	if targetURL == "" {
-		switch c.Network {
-		case Testnet:
-			targetURL = TestnetSorobanURL
-		case Mainnet:
-			targetURL = MainnetSorobanURL
-		case Futurenet:
-			targetURL = FuturenetSorobanURL
-		}
-	}
 
 	timer := c.startMethodTimer(ctx, "rpc.get_ledger_entries", map[string]string{
 		"network": c.GetNetworkName(),
@@ -349,6 +339,7 @@ func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keysToFetch []stri
 
 	var rpcResp GetLedgerEntriesResponse
 	if err := json.Unmarshal(respBytes, &rpcResp); err != nil {
+		logger.Logger.Error("Soroban getLedgerEntries response unmarshal failed", "url", targetURL, "error", err)
 		// Record failed remote node response
 		metrics.RecordRemoteNodeResponse(targetURL, string(c.Network), false, duration)
 		return nil, errors.WrapUnmarshalFailed(err, string(respBytes))
@@ -358,7 +349,7 @@ func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keysToFetch []stri
 		logger.Logger.Error("Soroban getLedgerEntries RPC error", "url", targetURL, "code", rpcResp.Error.Code, "message", rpcResp.Error.Message)
 		// Record failed remote node response
 		metrics.RecordRemoteNodeResponse(targetURL, string(c.Network), false, duration)
-		return nil, errors.WrapRPCError(targetURL, rpcResp.Error.Message, rpcResp.Error.Code)
+		return nil, errors.WrapSorobanError(targetURL, rpcResp.Error.Message, rpcResp.Error.Code)
 	}
 
 	// Record successful remote node response
@@ -455,16 +446,6 @@ func (c *Client) simulateTransactionAttempt(ctx context.Context, envelopeXdr str
 	// Always use the dedicated Soroban RPC URL for simulateTransaction; this is a
 	// Soroban JSON-RPC method and is not served by the Horizon REST API.
 	targetURL := c.SorobanURL
-	if targetURL == "" {
-		switch c.Network {
-		case Testnet:
-			targetURL = TestnetSorobanURL
-		case Mainnet:
-			targetURL = MainnetSorobanURL
-		case Futurenet:
-			targetURL = FuturenetSorobanURL
-		}
-	}
 
 	timer := c.startMethodTimer(ctx, "rpc.simulate_transaction", map[string]string{
 		"network": c.GetNetworkName(),
@@ -514,22 +495,25 @@ func (c *Client) simulateTransactionAttempt(ctx context.Context, envelopeXdr str
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusRequestEntityTooLarge {
+		logger.Logger.Error("Soroban simulateTransaction response too large", "url", targetURL, "status", resp.StatusCode)
 		return nil, errors.WrapRPCResponseTooLarge(targetURL)
 	}
 
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logger.Logger.Error("Soroban simulateTransaction response read failed", "url", targetURL, "error", err)
 		return nil, errors.WrapUnmarshalFailed(err, "body read error")
 	}
 
 	var rpcResp SimulateTransactionResponse
 	if err := json.Unmarshal(respBytes, &rpcResp); err != nil {
+		logger.Logger.Error("Soroban simulateTransaction unmarshal failed", "url", targetURL, "error", err)
 		return nil, errors.WrapUnmarshalFailed(err, string(respBytes))
 	}
 
 	if rpcResp.Error != nil {
 		logger.Logger.Error("Soroban simulateTransaction RPC error", "url", targetURL, "code", rpcResp.Error.Code, "message", rpcResp.Error.Message)
-		return nil, errors.WrapRPCError(targetURL, rpcResp.Error.Message, rpcResp.Error.Code)
+		return nil, errors.WrapSorobanError(targetURL, rpcResp.Error.Message, rpcResp.Error.Code)
 	}
 
 	logger.Logger.Debug("Soroban simulateTransaction succeeded", "url", targetURL)
@@ -594,13 +578,6 @@ func (c *Client) getHealthAttempt(ctx context.Context) (healthResp *GetHealthRes
 		return nil, errors.NewRPCError(errors.CodeRPCMarshalFailed, err)
 	}
 
-	// Prefer SorobanURL but fall back to the currently active HorizonURL so that
-	// rotateURL-triggered failovers are reflected in health checks.
-	targetURL = c.SorobanURL
-	if targetURL == "" {
-		targetURL = c.HorizonURL
-	}
-
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		return nil, errors.NewRPCError(errors.CodeRPCConnectionFailed, err)
@@ -616,11 +593,13 @@ func (c *Client) getHealthAttempt(ctx context.Context) (healthResp *GetHealthRes
 
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logger.Logger.Error("Soroban getHealth response read failed", "url", targetURL, "error", err)
 		return nil, errors.NewRPCError(errors.CodeRPCUnmarshalFailed, err)
 	}
 
 	var rpcResp GetHealthResponse
 	if err := json.Unmarshal(respBytes, &rpcResp); err != nil {
+		logger.Logger.Error("Soroban getHealth unmarshal failed", "url", targetURL, "error", err)
 		return nil, errors.NewRPCError(errors.CodeRPCUnmarshalFailed, err)
 	}
 
@@ -698,7 +677,7 @@ func (c *Client) CheckStaleness(ctx context.Context, network string) error {
 	switch strings.ToLower(network) {
 	case "testnet":
 		referenceURL = "https://soroban-testnet.stellar.org"
-	case "public":
+	case "mainnet", "public":
 		referenceURL = "https://soroban.stellar.org"
 	default:
 		// Skip check for 'standalone' or unknown networks

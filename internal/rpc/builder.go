@@ -240,6 +240,14 @@ func (b *clientBuilder) build() (*Client, error) {
 		b.config = &cfg
 	}
 
+	if b.horizonURL == "" {
+		b.horizonURL = b.config.HorizonURL
+	}
+
+	if len(b.altURLs) == 0 {
+		b.altURLs = []string{b.horizonURL}
+	}
+
 	if b.httpClient == nil {
 		mws := b.middlewares
 		if b.loggingEnabled {
@@ -248,18 +256,6 @@ func (b *clientBuilder) build() (*Client, error) {
 			mws = append([]Middleware{NewLoggingMiddleware()}, mws...)
 		}
 		b.httpClient = createHTTPClient(b.token, b.requestTimeout, mws...)
-	}
-
-	if len(b.altURLs) == 0 && b.horizonURL != "" {
-		b.altURLs = []string{b.horizonURL}
-	}
-
-	if b.horizonURL == "" {
-		b.horizonURL = b.config.HorizonURL
-	}
-
-	if len(b.altURLs) == 0 {
-		b.altURLs = []string{b.horizonURL}
 	}
 
 	return &Client{

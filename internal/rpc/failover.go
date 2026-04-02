@@ -49,7 +49,7 @@ func (c *Client) endpointAttempts() int {
 }
 
 // isHealthy checks if an endpoint is currently healthy or if circuit is open.
-// This is a best-effort check â€” there is an intentional TOCTOU window between
+// This is a best-effort check — there is an intentional TOCTOU window between
 // this call and the subsequent http.Do; no lock is held across both operations
 // because doing so would risk deadlocks with rotateURL. The circuit breaker is
 // an optimistic fast-path, not a hard guarantee.
@@ -82,34 +82,6 @@ func (c *Client) markSuccess(url string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.markSuccessLocked(url)
-}
-
-// markHorizonFailure atomically reads HorizonURL and records a failure.
-func (c *Client) markHorizonFailure() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.markFailureLocked(c.HorizonURL)
-}
-
-// markHorizonSuccess atomically reads HorizonURL and clears its failure state.
-func (c *Client) markHorizonSuccess() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.markSuccessLocked(c.HorizonURL)
-}
-
-// markSorobanFailure atomically reads SorobanURL and records a failure.
-func (c *Client) markSorobanFailure() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.markFailureLocked(c.SorobanURL)
-}
-
-// markSorobanSuccess atomically reads SorobanURL and clears its failure state.
-func (c *Client) markSorobanSuccess() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.markSuccessLocked(c.SorobanURL)
 }
 
 func (c *Client) markFailureLocked(url string) {
