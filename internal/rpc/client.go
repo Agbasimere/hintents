@@ -177,11 +177,11 @@ func (c *Client) GetTransaction(ctx context.Context, hash string) (*TransactionR
 	for attempt := 0; attempt < attempts; attempt++ {
 		resp, err := c.getTransactionAttempt(ctx, hash)
 		if err == nil {
-			c.markHorizonSuccess()
+			c.markSuccess(c.HorizonURL)
 			return resp, nil
 		}
 
-		c.markHorizonFailure()
+		c.markFailure(c.HorizonURL)
 
 		failures = append(failures, NodeFailure{URL: c.HorizonURL, Reason: err})
 
@@ -240,6 +240,12 @@ func (c *Client) getTransactionAttempt(ctx context.Context, hash string) (txResp
 		logger.Logger.Error("Failed to fetch transaction", "hash", hash, "error", err, "url", c.HorizonURL)
 		// Record failed remote node response
 		metrics.RecordRemoteNodeResponse(c.HorizonURL, string(c.Network), false, duration)
+
+		// Check if it's a 404 (Transaction Not Found)
+		if hErr, ok := err.(*horizonclient.Error); ok && hErr.Problem.Status == 404 {
+			return nil, errors.WrapTransactionNotFound(err)
+		}
+
 		return nil, errors.WrapRPCConnectionFailed(err)
 	}
 
@@ -277,11 +283,11 @@ func (c *Client) GetLedgerHeader(ctx context.Context, sequence uint32) (*LedgerH
 	for attempt := 0; attempt < attempts; attempt++ {
 		resp, err := c.getLedgerHeaderAttempt(ctx, sequence)
 		if err == nil {
-			c.markHorizonSuccess()
+			c.markSuccess(c.HorizonURL)
 			return resp, nil
 		}
 
-		c.markHorizonFailure()
+		c.markFailure(c.HorizonURL)
 
 		failures = append(failures, NodeFailure{URL: c.HorizonURL, Reason: err})
 

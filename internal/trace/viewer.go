@@ -172,6 +172,13 @@ func (v *InteractiveViewer) handleCommand(command string) bool {
 	cmdExact := parts[0]
 	cmd := strings.ToLower(cmdExact)
 
+	// Handle case-sensitive single-character shortcuts before the lowercased switch.
+	// '$' and 'G' both jump to the final instruction.
+	if cmdExact == "$" || cmdExact == "G" {
+		v.jumpToEnd()
+		return false
+	}
+
 	// Handle case-sensitive 'S' for the stdlib toggle before the lowercased switch
 	if cmdExact == "S" {
 		v.hideStdLib = !v.hideStdLib
@@ -316,6 +323,26 @@ func (v *InteractiveViewer) jumpToStep(stepStr string) {
 	}
 
 	fmt.Printf("%s Jumped to step %d\n", visualizer.Symbol("target"), state.Step)
+	v.displayCurrentState()
+}
+
+// jumpToEnd moves the cursor to the final instruction, loads its state, and
+// prints it. It mirrors the behaviour of the $ / G shortcut found in
+// vi-style navigation.
+func (v *InteractiveViewer) jumpToEnd() {
+	if len(v.trace.States) == 0 {
+		fmt.Printf("%s No instructions in trace\n", visualizer.Error())
+		return
+	}
+
+	lastStep := len(v.trace.States) - 1
+	state, err := v.trace.JumpToStep(lastStep)
+	if err != nil {
+		fmt.Printf("%s %s\n", visualizer.Error(), err)
+		return
+	}
+
+	fmt.Printf("%s Jumped to final instruction (step %d)\n", visualizer.Symbol("target"), state.Step)
 	v.displayCurrentState()
 }
 
@@ -736,6 +763,7 @@ func (v *InteractiveViewer) showHelp() {
 	fmt.Println("  n, next, forward        - Step forward")
 	fmt.Println("  b, p, prev, back        - Step backward")
 	fmt.Println("  j, jump <step>          - Jump to specific step")
+	fmt.Println("  $, G                    - Jump to final instruction (last step)")
 	fmt.Println()
 	fmt.Println("Display:")
 	fmt.Println("  s, show, state          - Show current state")

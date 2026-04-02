@@ -268,16 +268,6 @@ func (c *Client) getLedgerEntriesAttempt(ctx context.Context, keysToFetch []stri
 	// Always use the dedicated Soroban RPC URL for getLedgerEntries; this is a
 	// Soroban JSON-RPC method and is not served by the Horizon REST API.
 	targetURL := c.SorobanURL
-	if targetURL == "" {
-		switch c.Network {
-		case Testnet:
-			targetURL = TestnetSorobanURL
-		case Mainnet:
-			targetURL = MainnetSorobanURL
-		case Futurenet:
-			targetURL = FuturenetSorobanURL
-		}
-	}
 
 	timer := c.startMethodTimer(ctx, "rpc.get_ledger_entries", map[string]string{
 		"network": c.GetNetworkName(),
@@ -456,16 +446,6 @@ func (c *Client) simulateTransactionAttempt(ctx context.Context, envelopeXdr str
 	// Always use the dedicated Soroban RPC URL for simulateTransaction; this is a
 	// Soroban JSON-RPC method and is not served by the Horizon REST API.
 	targetURL := c.SorobanURL
-	if targetURL == "" {
-		switch c.Network {
-		case Testnet:
-			targetURL = TestnetSorobanURL
-		case Mainnet:
-			targetURL = MainnetSorobanURL
-		case Futurenet:
-			targetURL = FuturenetSorobanURL
-		}
-	}
 
 	timer := c.startMethodTimer(ctx, "rpc.simulate_transaction", map[string]string{
 		"network": c.GetNetworkName(),
@@ -598,13 +578,6 @@ func (c *Client) getHealthAttempt(ctx context.Context) (healthResp *GetHealthRes
 		return nil, errors.NewRPCError(errors.CodeRPCMarshalFailed, err)
 	}
 
-	// Prefer SorobanURL but fall back to the currently active HorizonURL so that
-	// rotateURL-triggered failovers are reflected in health checks.
-	targetURL = c.SorobanURL
-	if targetURL == "" {
-		targetURL = c.HorizonURL
-	}
-
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		return nil, errors.NewRPCError(errors.CodeRPCConnectionFailed, err)
@@ -704,7 +677,7 @@ func (c *Client) CheckStaleness(ctx context.Context, network string) error {
 	switch strings.ToLower(network) {
 	case "testnet":
 		referenceURL = "https://soroban-testnet.stellar.org"
-	case "public":
+	case "mainnet", "public":
 		referenceURL = "https://soroban.stellar.org"
 	default:
 		// Skip check for 'standalone' or unknown networks

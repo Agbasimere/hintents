@@ -5,18 +5,19 @@ package rpc
 
 import (
 	"context"
-	"errors"
+	stdErrors "errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	errs "github.com/dotandev/hintents/internal/errors"
+	"github.com/dotandev/hintents/internal/errors"
 	"github.com/stellar/go-stellar-sdk/clients/horizonclient"
 	hProtocol "github.com/stellar/go-stellar-sdk/protocols/horizon"
 	effects "github.com/stellar/go-stellar-sdk/protocols/horizon/effects"
 	operations "github.com/stellar/go-stellar-sdk/protocols/horizon/operations"
+	"github.com/stellar/go-stellar-sdk/support/render/problem"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 	"github.com/stretchr/testify/assert"
 )
@@ -248,10 +249,20 @@ func TestGetTransaction(t *testing.T) {
 			expectErr: false,
 		},
 		{
+			name: "transaction not found",
+			hash: "not-found",
+			mockFunc: func(hash string) (hProtocol.Transaction, error) {
+				return hProtocol.Transaction{}, &horizonclient.Error{
+					Problem: problem.P{Status: 404},
+				}
+			},
+			expectErr: true,
+		},
+		{
 			name: "error",
 			hash: "fail",
 			mockFunc: func(hash string) (hProtocol.Transaction, error) {
-				return hProtocol.Transaction{}, errors.New("not found")
+				return hProtocol.Transaction{}, stdErrors.New("internal server error")
 			},
 			expectErr: true,
 		},
@@ -266,6 +277,9 @@ func TestGetTransaction(t *testing.T) {
 			if tt.expectErr {
 				assert.Error(t, err)
 				assert.Nil(t, resp)
+				if tt.name == "transaction not found" {
+					assert.True(t, errors.Is(err, errors.ErrTransactionNotFound))
+				}
 			} else {
 				assert.NoError(t, err)
 				assert.NotNil(t, resp)
@@ -350,9 +364,9 @@ func TestSimulateTransaction_ResponseTooLarge(t *testing.T) {
 }
 
 func TestIsResponseTooLarge(t *testing.T) {
-	err := errs.WrapRPCResponseTooLarge("https://example.com")
+	err := errors.WrapRPCResponseTooLarge("https://example.com")
 	assert.True(t, IsResponseTooLarge(err))
-	assert.False(t, IsResponseTooLarge(errs.WrapRPCConnectionFailed(errors.New("fail"))))
+	assert.False(t, IsResponseTooLarge(errors.WrapRPCConnectionFailed(stdErrors.New("fail"))))
 	assert.False(t, IsResponseTooLarge(nil))
 }
 

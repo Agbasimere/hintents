@@ -375,6 +375,8 @@ Local WASM Replay Mode:
 			fmt.Println("🚫 Cache disabled by --no-cache flag")
 		}
 
+		_ = client.CheckStaleness(ctx, networkFlag)
+
 		fmt.Printf("Debugging transaction: %s\n", txHash)
 		fmt.Printf("Primary Network: %s\n", networkFlag)
 		if compareNetworkFlag != "" {
