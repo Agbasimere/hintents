@@ -5,7 +5,8 @@
 
 pub mod gas_optimizer;
 pub mod git_detector;
-pub mod ipc;
+pub mod context;
+pub mod runner;
 pub mod snapshot;
 pub mod source_map_cache;
 pub mod source_mapper;
