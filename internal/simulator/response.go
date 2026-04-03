@@ -16,11 +16,34 @@ type SimulationResponse struct {
 	Logs              []string             `json:"logs,omitempty"`
 	Flamegraph        string               `json:"flamegraph,omitempty"`
 	AuthTrace         *authtrace.AuthTrace `json:"auth_trace,omitempty"`
+	OptimizationReport *OptimizationReport  `json:"optimization_report,omitempty"`
+	BudgetUsage        *BudgetUsage         `json:"budget_usage,omitempty"`
+	CategorizedEvents  []CategorizedEvent   `json:"categorized_events,omitempty"`
+	ProtocolVersion    *uint32              `json:"protocol_version,omitempty"`
+	StackTrace         *WasmStackTrace      `json:"stack_trace,omitempty"`
+	SourceLocation     string               `json:"source_location,omitempty"`
+	WasmOffset         *uint64              `json:"wasm_offset,omitempty"`
+	LinearMemoryDump   string               `json:"linear_memory_dump,omitempty"`
+}
+
+type OptimizationTip struct {
+	Category         string  `json:"category"`
+	Severity         string  `json:"severity"`
+	Message          string  `json:"message"`
+	EstimatedSavings string  `json:"estimated_savings"`
+	CodeLocation     *string `json:"code_location,omitempty"`
+}
+
+type OptimizationReport struct {
+	OverallEfficiency    float64            `json:"overall_efficiency"`
+	Tips                 []OptimizationTip  `json:"tips"`
+	BudgetBreakdown      map[string]float64 `json:"budget_breakdown"`
+	ComparisonToBaseline string             `json:"comparison_to_baseline"`
 	BudgetUsage       *BudgetUsage         `json:"budget_usage,omitempty"`
 	CategorizedEvents []CategorizedEvent   `json:"categorized_events,omitempty"`
 	ProtocolVersion   *uint32              `json:"protocol_version,omitempty"`
 	StackTrace        *WasmStackTrace      `json:"stack_trace,omitempty"`
-	SourceLocation    string               `json:"source_location,omitempty"`
+	SourceLocation    *SourceLocation      `json:"source_location,omitempty"`
 	WasmOffset        *uint64              `json:"wasm_offset,omitempty"`
 	LinearMemoryDump  string               `json:"linear_memory_dump,omitempty"`
 }
