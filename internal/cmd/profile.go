@@ -109,7 +109,7 @@ func runSimulationProfile(cmd *cobra.Command) error {
 		return err
 	}
 
-	fmt.Println("🚀 Running gas analysis simulation...")
+	fmt.Println("[DEPLOY] Running gas analysis simulation...")
 	resp, err := runner.Run(ctx, req)
 	if err != nil {
 		return fmt.Errorf("simulation failed: %w", err)
@@ -131,7 +131,7 @@ func runSimulationProfile(cmd *cobra.Command) error {
 		if err := os.WriteFile(profileOutJSON, data, 0644); err != nil {
 			return fmt.Errorf("failed to write JSON report: %w", err)
 		}
-		fmt.Printf("\n✅ Optimization report exported to: %s\n", profileOutJSON)
+		fmt.Printf("\n[OK] Optimization report exported to: %s\n", profileOutJSON)
 	}
 
 	return nil
@@ -161,7 +161,7 @@ func runTraceProfile(filename string) error {
 		return fmt.Errorf("failed to generate pprof profile: %w", err)
 	}
 
-	fmt.Printf("✅ Profile saved to: %s\n", profileOutput)
+	fmt.Printf("[OK] Profile saved to: %s\n", profileOutput)
 	fmt.Println("Use 'go tool pprof' to analyze the output.")
 	return nil
 }
@@ -194,7 +194,7 @@ func displayOptimizationReport(report *simulator.OptimizationReport, budget *sim
 	}
 
 	if len(report.Tips) > 0 {
-		fmt.Printf("\n💡 Optimization Tips:\n")
+		fmt.Printf("\n[INFO] Optimization Tips:\n")
 		for _, tip := range report.Tips {
 			severity := tip.Severity
 			icon := "🟢 "
@@ -212,6 +212,6 @@ func displayOptimizationReport(report *simulator.OptimizationReport, budget *sim
 			}
 		}
 	} else {
-		fmt.Println("\n✅ No specific optimizations identified. Your contract seems gas-efficient!")
+		fmt.Println("\n[OK] No specific optimizations identified. Your contract seems gas-efficient!")
 	}
 }
