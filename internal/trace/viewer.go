@@ -26,8 +26,12 @@ type InteractiveViewer struct {
 	eventFilter string   // one of EventTypeTrap, EventTypeContractCall, EventTypeHostFunction, EventTypeAuth, or ""
 	filterCycle []string // order for cycling: off, trap, contract_call, host_function, auth
 	hideStdLib  bool
+	forked      bool
+	forkStep    int
+	forkParams  map[string]string
 	trap        *TrapInfo
 	dwarfParser *dwarf.Parser
+	navHistory  *NavigatorHistory // undo stack for Ctrl+Z navigation
 	stateMu     sync.RWMutex
 	stateCache  map[int]*ExecutionState
 	fetching    map[int]bool
@@ -49,6 +53,7 @@ func NewInteractiveViewer(trace *ExecutionTrace) *InteractiveViewer {
 		reader:      bufio.NewReader(os.Stdin),
 		eventFilter: "",
 		filterCycle: []string{"", EventTypeTrap, EventTypeContractCall, EventTypeHostFunction, EventTypeAuth},
+		navHistory:  NewNavigatorHistory(),
 		stateCache:  make(map[int]*ExecutionState),
 		fetching:    make(map[int]bool),
 		fetchErr:    make(map[int]string),
@@ -69,6 +74,7 @@ func NewInteractiveViewerWithWASM(trace *ExecutionTrace, wasmData []byte) *Inter
 		reader:      bufio.NewReader(os.Stdin),
 		eventFilter: "",
 		filterCycle: []string{"", EventTypeTrap, EventTypeContractCall, EventTypeHostFunction, EventTypeAuth},
+		navHistory:  NewNavigatorHistory(),
 		stateCache:  make(map[int]*ExecutionState),
 		fetching:    make(map[int]bool),
 		fetchErr:    make(map[int]string),
@@ -192,20 +198,27 @@ func (v *InteractiveViewer) handleCommand(command string) bool {
 
 	switch cmd {
 	case "n", "next", "forward":
+		v.navHistory.Push(v.trace.CurrentStep)
 		v.stepForward()
 	case "b", "p", "prev", "back", "backward":
+		v.navHistory.Push(v.trace.CurrentStep)
 		v.stepBackward()
 	case "f", "filter":
 		v.cycleEventFilter()
 	case "j", "jump":
 		if len(parts) > 1 {
+			v.navHistory.Push(v.trace.CurrentStep)
 			v.jumpToStep(parts[1])
 		} else {
 			fmt.Println("Usage: jump <step_number>")
 		}
+	case "u", "undo":
+		v.undoNavigation()
 	case "s", "show", "state":
 		v.displayCurrentState()
-	case "r", "reconstruct":
+	case "r", "replay":
+		v.replayFromCurrent(parts[1:])
+	case "rc", "reconstruct":
 		if len(parts) > 1 {
 			v.reconstructState(parts[1])
 		} else {
@@ -228,6 +241,8 @@ func (v *InteractiveViewer) handleCommand(command string) bool {
 	case "q", "quit", "exit":
 		fmt.Printf("Goodbye! %s\n", visualizer.Symbol("wave"))
 		return true
+	case "0", "rewind":
+		v.rewindToStart()
 	case "y", "yank", "copy":
 		if len(parts) > 1 {
 			v.handleYank(parts[1:])
@@ -239,6 +254,45 @@ func (v *InteractiveViewer) handleCommand(command string) bool {
 	}
 
 	return false
+}
+
+// rewindToStart resets the viewer to step 0, clearing filters and search state.
+func (v *InteractiveViewer) rewindToStart() {
+	if len(v.trace.States) == 0 {
+		fmt.Printf("%s No states to rewind to\n", visualizer.Error())
+		return
+	}
+
+	v.trace.CurrentStep = 0
+	v.eventFilter = ""
+
+	state, err := v.trace.GetCurrentState()
+	if err != nil {
+		fmt.Printf("%s %s\n", visualizer.Error(), err)
+		return
+	}
+
+	fmt.Printf("%s Rewound to step 0\n", visualizer.Symbol("target"))
+	_ = state
+	v.displayCurrentState()
+}
+
+// undoNavigation pops the last navigation index from the history stack and jumps back.
+func (v *InteractiveViewer) undoNavigation() {
+	idx, ok := v.navHistory.Pop()
+	if !ok {
+		fmt.Printf("%s Nothing to undo\n", visualizer.Symbol("arrow_l"))
+		return
+	}
+
+	state, err := v.trace.JumpToStep(idx)
+	if err != nil {
+		fmt.Printf("%s %s\n", visualizer.Error(), err)
+		return
+	}
+
+	fmt.Printf("%s Undo: returned to step %d\n", visualizer.Symbol("arrow_l"), state.Step)
+	v.displayCurrentState()
 }
 
 // stepForward moves to the next step, respecting the event filter and hideStdLib toggle.
@@ -479,7 +533,7 @@ func (v *InteractiveViewer) statusBarLine(state *ExecutionState) string {
 	memoryMB := bytesToMB(stateMemorySizeBytes(state))
 	snapshotID := v.snapshotIDForStep(state.Step)
 
-	return fmt.Sprintf(
+	line := fmt.Sprintf(
 		"Step %d/%d | Payload: %.1fkb | Memory: %.2fmb | Snapshot ID: %s",
 		state.Step+1,
 		len(v.trace.States),
@@ -487,6 +541,10 @@ func (v *InteractiveViewer) statusBarLine(state *ExecutionState) string {
 		memoryMB,
 		snapshotID,
 	)
+	if v.forked {
+		line += fmt.Sprintf(" | Forked from step %d", v.forkStep)
+	}
+	return line
 }
 
 func (v *InteractiveViewer) snapshotIDForStep(step int) string {
@@ -586,6 +644,117 @@ func (v *InteractiveViewer) reconstructState(stepStr string) {
 	fmt.Printf("\n%s Reconstructed State at Step %d\n", visualizer.Symbol("wrench"), step)
 	fmt.Println(separator(termW))
 	v.displayState(state)
+}
+
+// replayFromCurrent forks the trace at the current step and replays forward
+// using optional `key=value` overrides. Prefix with `mem.` to target Memory.
+func (v *InteractiveViewer) replayFromCurrent(rawParams []string) {
+	if len(v.trace.States) == 0 {
+		fmt.Printf("%s Cannot replay an empty trace\n", visualizer.Error())
+		return
+	}
+	if v.trace.CurrentStep >= len(v.trace.States)-1 {
+		fmt.Printf("%s Replay requires rewinding first (already at last step)\n", visualizer.Error())
+		return
+	}
+
+	params, err := parseForkParams(rawParams)
+	if err != nil {
+		fmt.Printf("%s %s\n", visualizer.Error(), err)
+		return
+	}
+
+	base, err := v.trace.ReconstructStateAt(v.trace.CurrentStep)
+	if err != nil {
+		fmt.Printf("%s Failed to reconstruct rewind point: %s\n", visualizer.Error(), err)
+		return
+	}
+
+	hostState := copyMap(base.HostState)
+	memoryState := copyMap(base.Memory)
+	for k, val := range params {
+		if strings.HasPrefix(k, "mem.") {
+			memoryState[strings.TrimPrefix(k, "mem.")] = val
+			continue
+		}
+		hostState[k] = val
+	}
+
+	original := make([]ExecutionState, len(v.trace.States))
+	copy(original, v.trace.States)
+
+	forkedStates := make([]ExecutionState, 0, len(original))
+	forkedStates = append(forkedStates, original[:v.trace.CurrentStep+1]...)
+
+	for i := v.trace.CurrentStep + 1; i < len(original); i++ {
+		next := original[i]
+
+		if next.HostState != nil {
+			for key, value := range next.HostState {
+				hostState[key] = value
+			}
+		}
+		if next.Memory != nil {
+			for key, value := range next.Memory {
+				memoryState[key] = value
+			}
+		}
+
+		next.HostState = copyMap(hostState)
+		next.Memory = copyMap(memoryState)
+		if i == v.trace.CurrentStep+1 {
+			next.Operation = fmt.Sprintf("%s [fork-resumed]", next.Operation)
+		}
+
+		forkedStates = append(forkedStates, next)
+	}
+
+	v.trace.States = forkedStates
+	v.rebuildSnapshots()
+	v.forked = true
+	v.forkStep = v.trace.CurrentStep
+	v.forkParams = params
+
+	fmt.Printf("%s Sent control command: ROLLBACK_AND_RESUME (step=%d)\n", visualizer.Symbol("sync"), v.forkStep)
+	if len(params) > 0 {
+		fmt.Printf("%s Applied fork parameters: %v\n", visualizer.Symbol("wrench"), params)
+	}
+	v.displayCurrentState()
+}
+
+func parseForkParams(raw []string) (map[string]string, error) {
+	params := make(map[string]string)
+	for _, item := range raw {
+		parts := strings.SplitN(item, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid replay parameter %q, expected key=value", item)
+		}
+		key := strings.TrimSpace(parts[0])
+		if key == "" {
+			return nil, fmt.Errorf("invalid replay parameter %q, key cannot be empty", item)
+		}
+		params[key] = strings.TrimSpace(parts[1])
+	}
+	return params, nil
+}
+
+func (v *InteractiveViewer) rebuildSnapshots() {
+	v.trace.Snapshots = v.trace.Snapshots[:0]
+	interval := v.trace.SnapshotInterval
+	if interval <= 0 {
+		interval = DefaultSnapshotInterval
+	}
+
+	for i := range v.trace.States {
+		v.trace.States[i].Step = i
+		if i%interval != 0 {
+			continue
+		}
+		v.trace.Snapshots = append(v.trace.Snapshots, StateSnapshot{
+			Step:      i,
+			Timestamp: v.trace.States[i].Timestamp,
+		})
+	}
 }
 
 // displayState displays a complete state, reflowing long values to fit the
@@ -764,13 +933,16 @@ func (v *InteractiveViewer) showHelp() {
 	fmt.Println("  b, p, prev, back        - Step backward")
 	fmt.Println("  j, jump <step>          - Jump to specific step")
 	fmt.Println("  $, G                    - Jump to final instruction (last step)")
+	fmt.Println("  0, rewind               - Rewind to beginning (step 0)")
+	fmt.Println("  u, undo (Ctrl+Z)        - Undo last navigation step")
 	fmt.Println()
 	fmt.Println("Display:")
 	fmt.Println("  s, show, state          - Show current state")
 	fmt.Println("  e, expand               - Expand / show full detail of current step")
 	fmt.Println("  S                       - Toggle hiding/showing Rust core::* traces")
 	fmt.Println("  e, expand               - Expand / collapse the current trace node")
-	fmt.Println("  r, reconstruct [step]   - Reconstruct state")
+	fmt.Println("  r, replay [k=v ...]     - Fork from current step and replay forward")
+	fmt.Println("  rc, reconstruct [step]  - Reconstruct state")
 	fmt.Println("  t, trap                 - Show trap info with local variables")
 	fmt.Println("  l, list [count]         - List steps (default: 10)")
 	fmt.Println("  i, info                 - Show navigation info")

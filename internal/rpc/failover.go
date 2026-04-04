@@ -106,7 +106,7 @@ func (c *Client) markSuccessLocked(url string) {
 	delete(c.lastFailure, url)
 }
 
-// rotateURL switches to the next available provider URL, skipping unhealthy ones if possible
+// rotateURL switches to the next available provider URL, preferring healthier nodes.
 func (c *Client) rotateURL() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -115,17 +115,58 @@ func (c *Client) rotateURL() bool {
 		return false
 	}
 
-	// Try to find a healthy URL
-	for i := 0; i < len(c.AltURLs); i++ {
+	currentURL := c.AltURLs[c.currIndex]
+
+	// Build list of healthy candidates excluding current URL.
+	// Build candidate list excluding current URL.
+	candidates := make([]string, 0, len(c.AltURLs)-1)
+	for _, url := range c.AltURLs {
+		if url != currentURL && c.isHealthyLocked(url) {
+			candidates = append(candidates, url)
+		}
+	}
+
+	// If we have health telemetry, prefer the healthiest candidate.
+	if len(candidates) > 0 && c.healthCollector != nil {
+		bestURL := c.healthCollector.GetHealthiestURL(candidates)
+		if bestURL != "" {
+			for i, url := range c.AltURLs {
+				if url == bestURL {
+					c.currIndex = i
+					break
+				}
+			}
+		} else {
+			c.currIndex = (c.currIndex + 1) % len(c.AltURLs)
+		}
+	} else {
+		// Fall back to round-robin, preferring healthy endpoints when possible.
+		for i := 0; i < len(c.AltURLs); i++ {
 		c.currIndex = (c.currIndex + 1) % len(c.AltURLs)
 		url := c.AltURLs[c.currIndex]
 		if c.isHealthyLocked(url) {
 			break
 		}
-		// If we've circled back to where we started, just take it
-		if i == len(c.AltURLs)-1 {
-			break
+	}
+
+	// If no healthy candidate is available, fall back to simple round-robin.
+	if len(candidates) == 0 {
+		c.currIndex = (c.currIndex + 1) % len(c.AltURLs)
+	} else if c.healthCollector != nil {
+		bestURL := c.healthCollector.GetHealthiestURL(candidates)
+		if bestURL != "" {
+			for i, url := range c.AltURLs {
+				if url == bestURL {
+					c.currIndex = i
+					break
+				}
+			}
+		} else {
+			c.currIndex = (c.currIndex + 1) % len(c.AltURLs)
 		}
+	} else {
+		c.currIndex = (c.currIndex + 1) % len(c.AltURLs)
+	}
 	}
 
 	c.HorizonURL = c.AltURLs[c.currIndex]

@@ -78,6 +78,22 @@ var (
 	}
 )
 
+// Middleware defines a function that wraps an http.RoundTripper
+type Middleware func(http.RoundTripper) http.RoundTripper
+
+// RoundTripperFunc is a helper to implement http.RoundTripper with a function
+type RoundTripperFunc func(*http.Request) (*http.Response, error)
+
+// RoundTrip implements http.RoundTripper
+func (f RoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// HTTPClient is an interface that matches http.Client.
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 // Client handles interactions with the Stellar Network
 type Client struct {
 	Horizon         horizonclient.ClientInterface
@@ -87,7 +103,7 @@ type Client struct {
 	AltURLs         []string
 	currIndex       int
 	mu              sync.RWMutex
-	httpClient      *http.Client
+	httpClient      HTTPClient
 	token           string // stored for reference, not logged
 	Config          NetworkConfig
 	CacheEnabled    bool
@@ -98,7 +114,8 @@ type Client struct {
 	// rotateCount tracks how many times rotateURL has successfully switched
 	// the active provider.  This is useful for metrics/observability when the
 	// client is operating in a multi‑URL failover configuration.
-	rotateCount int
+	rotateCount     int
+	healthCollector *HealthCollector
 }
 
 // NewClientDefault creates a new RPC client with sensible defaults
@@ -135,11 +152,109 @@ func NewClientWithURLsOption(urls []string, net Network, token string) *Client {
 	return client
 }
 
+// rotateURL switches to the next available provider URL, skipping unhealthy ones if possible
+func (c *Client) rotateURL() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if len(c.AltURLs) <= 1 {
+		return false
+	}
+
+	// Try to find a healthy URL
+	for i := 0; i < len(c.AltURLs); i++ {
+		c.currIndex = (c.currIndex + 1) % len(c.AltURLs)
+		url := c.AltURLs[c.currIndex]
+		if c.isHealthyLocked(url) {
+			break
+		}
+		// If we've circled back to where we started, just take it
+		if i == len(c.AltURLs)-1 {
+			break
+		}
+	}
+
+	c.HorizonURL = c.AltURLs[c.currIndex]
+	httpClient := c.httpClient
+	if httpClient == nil {
+		httpClient = createHTTPClient(c.token, defaultHTTPTimeout, c.middlewares...)
+	}
+	c.Horizon = &horizonclient.Client{
+		HorizonURL: c.HorizonURL,
+		HTTP:       httpClient,
+	}
+	// Keep SorobanURL in sync with the newly selected node so that
+	// Soroban JSON-RPC calls use the same failover endpoint as Horizon.
+	c.SorobanURL = c.AltURLs[c.currIndex]
+
+	logger.Logger.Warn("RPC failover triggered", "new_url", c.HorizonURL)
+	// increment counter under the same lock so readers get a consistent view
+	c.rotateCount++
+	return true
+}
+
+// RotateCount returns the number of times the client has switched
+// to a different Horizon URL via rotateURL.  It is safe for concurrent
+// use.
+func (c *Client) RotateCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.rotateCount
+}
+
+// attempts returns the number of retry attempts for failover loops (at least 1)
+func (c *Client) attempts() int {
+	if len(c.AltURLs) == 0 {
+		return 1
+	}
+	return len(c.AltURLs)
+}
+
+func (c *Client) getHTTPClient() HTTPClient {
+	if c.httpClient != nil {
+		return c.httpClient
+	}
+	return http.DefaultClient
+}
+
 func (c *Client) startMethodTimer(ctx context.Context, method string, attributes map[string]string) MethodTimer {
 	if c == nil || c.methodTelemetry == nil {
 		return noopMethodTimer{}
 	}
 	return c.methodTelemetry.StartMethodTimer(ctx, method, attributes)
+}
+
+// GetHealthReport returns a snapshot of health telemetry for all known RPC nodes.
+func (c *Client) GetHealthReport() *HealthReport {
+	if c.healthCollector == nil {
+		return &HealthReport{
+			Nodes:       []NodeHealthStats{},
+			GeneratedAt: time.Now(),
+			Network:     c.GetNetworkName(),
+		}
+	}
+
+	stats := c.healthCollector.GetAllStats()
+
+	// Update circuit breaker state from the client's failure tracking
+	c.mu.RLock()
+	for i := range stats {
+		stats[i].CircuitOpen = !c.isHealthyLocked(stats[i].URL)
+	}
+	c.mu.RUnlock()
+
+	return &HealthReport{
+		Nodes:       stats,
+		GeneratedAt: time.Now(),
+		Network:     c.GetNetworkName(),
+	}
+}
+
+// recordTelemetry records request telemetry if the health collector is available.
+func (c *Client) recordTelemetry(url string, latency time.Duration, success bool) {
+	if c.healthCollector != nil {
+		c.healthCollector.RecordRequest(url, latency, success)
+	}
 }
 
 // NewCustomClient creates a new RPC client for a custom/private network
@@ -161,12 +276,13 @@ func NewCustomClient(config NetworkConfig) (*Client, error) {
 	}
 
 	return &Client{
-		Horizon:      horizonClient,
-		Network:      "custom",
-		SorobanURL:   sorobanURL,
-		Config:       config,
-		CacheEnabled: true,
-		httpClient:   httpClient,
+		Horizon:         horizonClient,
+		Network:         "custom",
+		SorobanURL:      sorobanURL,
+		Config:          config,
+		CacheEnabled:    true,
+		httpClient:      httpClient,
+		healthCollector: NewHealthCollector(),
 	}, nil
 }
 
@@ -229,6 +345,7 @@ func (c *Client) getTransactionAttempt(ctx context.Context, hash string) (txResp
 		span.RecordError(err)
 		// Record failed remote node response
 		metrics.RecordRemoteNodeResponse(c.HorizonURL, string(c.Network), false, time.Since(startTime))
+		c.recordTelemetry(c.HorizonURL, time.Since(startTime), false)
 		return nil, errors.WrapRPCConnectionFailed(err)
 	}
 
@@ -240,17 +357,22 @@ func (c *Client) getTransactionAttempt(ctx context.Context, hash string) (txResp
 		logger.Logger.Error("Failed to fetch transaction", "hash", hash, "error", err, "url", c.HorizonURL)
 		// Record failed remote node response
 		metrics.RecordRemoteNodeResponse(c.HorizonURL, string(c.Network), false, duration)
+		c.recordTelemetry(c.HorizonURL, duration, false)
 
 		// Check if it's a 404 (Transaction Not Found)
 		if hErr, ok := err.(*horizonclient.Error); ok && hErr.Problem.Status == 404 {
+			c.recordTelemetry(c.HorizonURL, duration, true)
 			return nil, errors.WrapTransactionNotFound(err)
 		}
+
+		c.recordTelemetry(c.HorizonURL, duration, false)
 
 		return nil, errors.WrapRPCConnectionFailed(err)
 	}
 
 	// Record successful remote node response
 	metrics.RecordRemoteNodeResponse(c.HorizonURL, string(c.Network), true, duration)
+	c.recordTelemetry(c.HorizonURL, duration, true)
 
 	span.SetAttributes(
 		attribute.Int("envelope.size_bytes", len(tx.EnvelopeXdr)),
@@ -579,3 +701,120 @@ func getTransactionStatus(tx hProtocol.Transaction) string {
 }
 
 //  Warn if RPC node is lagging behind current ledge
+
+func (c *Client) postRequest(ctx context.Context, payload interface{}, result interface{}) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Use c.SorobanURL as the endpoint
+	req, err := http.NewRequestWithContext(ctx, "POST", c.SorobanURL, bytes.NewBuffer(data))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Use the client's internal httpClient
+	resp, err := c.getHTTPClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("http request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	return json.NewDecoder(resp.Body).Decode(result)
+}
+
+// GetLatestLedgerSequence fetches the latest ledger from the node this client is configured for.
+func (c *Client) GetLatestLedgerSequence(ctx context.Context) (int, error) {
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getLatestLedger",
+	}
+
+	var resp GetLatestLedgerResponse
+	err := c.postRequest(ctx, payload, &resp)
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Result.Sequence, nil
+}
+
+func fetchLatestFromSDF(ctx context.Context, url string) (int, error) {
+	// 1. Prepare the JSON-RPC payload
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getLatestLedger",
+	}
+	body, _ := json.Marshal(payload)
+
+	// 2. Create the request with a strict timeout
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	// 3. Decode using the struct you found earlier
+	var rpcResp GetLatestLedgerResponse
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		return 0, err
+	}
+
+	if rpcResp.Error != nil {
+		return 0, fmt.Errorf("RPC error: %s", rpcResp.Error.Message)
+	}
+
+	return rpcResp.Result.Sequence, nil
+}
+
+func (c *Client) CheckStaleness(ctx context.Context, network string) error {
+	// 1. Get the ledger sequence from the user's configured RPC (the local node)
+	localLedger, err := c.GetLatestLedgerSequence(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get local ledger: %w", err)
+	}
+
+	// 2. Determine the official reference URL based on the network
+	var referenceURL string
+	switch strings.ToLower(network) {
+	case "testnet":
+		referenceURL = "https://soroban-testnet.stellar.org"
+	case "public":
+		referenceURL = "https://soroban.stellar.org"
+	default:
+		// Skip check for 'standalone' or unknown networks
+		return nil
+	}
+
+	// 3. Fetch the latest ledger from the official SDF reference node
+	refLedger, err := fetchLatestFromSDF(ctx, referenceURL)
+	if err != nil {
+		// We don't want to block the tool if the internet is down,
+		// just log it and move on.
+		return nil
+	}
+
+	// 4. Compare
+	const threshold = 15 // ~1.5 minutes of lag
+	if refLedger > localLedger+threshold {
+		fmt.Printf("\033[33m[WARN]\033[0m Local node is lagging! (Local: %d, Network: %d). \n", localLedger, refLedger)
+		fmt.Println("       Traces and replays might use outdated contract state.")
+	}
+
+	return nil
+}

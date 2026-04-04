@@ -14,9 +14,25 @@
 //! to reconstruct ledger state for simulation or analysis purposes.
 
 use base64::Engine;
+use bincode::Options;
+use serde::{Deserialize, Serialize};
 use soroban_env_host::xdr::{LedgerEntry, LedgerKey, Limits, ReadXdr, WriteXdr};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+const SNAPSHOT_FORMAT_VERSION: u8 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SnapshotWireFormat {
+    version: u8,
+    entries: Vec<SnapshotWireEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SnapshotWireEntry {
+    key: Vec<u8>,
+    entry: Vec<u8>,
+}
 
 /// Represents a decoded ledger snapshot containing key-value pairs
 /// of ledger entries ready for loading into Host storage.
@@ -88,21 +104,61 @@ impl LedgerSnapshot {
         })
     }
 
-    /// Returns a new snapshot that shares the same base as `self` but starts
-    /// with an empty delta.
+    /// Serializes the snapshot into a compact binary format.
     ///
-    /// Use this to cheaply capture a "before" state before applying mutations:
-    /// `Arc::clone` is O(1), and subsequent writes only allocate into the new
-    /// snapshot's delta without touching the shared base.
-    #[allow(dead_code)]
-    pub fn fork(&self) -> Self {
-        Self {
-            base: Arc::clone(&self.base),
-            delta: HashMap::new(),
-        }
+    /// The envelope uses explicit big-endian bincode options so integer
+    /// fields remain stable across platforms, while ledger keys and entries
+    /// are preserved as their canonical XDR byte representation.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, SnapshotError> {
+        let mut entries = self
+            .entries
+            .iter()
+            .map(|(key, entry)| {
+                let entry = entry.to_xdr(Limits::none()).map_err(|e| {
+                    SnapshotError::XdrEncoding(format!("Failed to encode entry: {e}"))
+                })?;
+
+                Ok(SnapshotWireEntry {
+                    key: key.clone(),
+                    entry,
+                })
+            })
+            .collect::<Result<Vec<_>, SnapshotError>>()?;
+
+        // Sort by key so the binary output is deterministic even though the
+        // in-memory representation uses a HashMap.
+        entries.sort_by(|left, right| left.key.cmp(&right.key));
+
+        snapshot_bincode_options()
+            .serialize(&SnapshotWireFormat {
+                version: SNAPSHOT_FORMAT_VERSION,
+                entries,
+            })
+            .map_err(|e| SnapshotError::BinaryEncoding(e.to_string()))
     }
 
-    /// Returns the number of live entries in the snapshot.
+    /// Restores a snapshot from its compact binary representation.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, SnapshotError> {
+        let snapshot: SnapshotWireFormat = snapshot_bincode_options()
+            .deserialize(bytes)
+            .map_err(|e| SnapshotError::BinaryDecoding(e.to_string()))?;
+
+        if snapshot.version != SNAPSHOT_FORMAT_VERSION {
+            return Err(SnapshotError::UnsupportedVersion(snapshot.version));
+        }
+
+        let mut entries = HashMap::with_capacity(snapshot.entries.len());
+
+        for wire_entry in snapshot.entries {
+            let entry = LedgerEntry::from_xdr(wire_entry.entry, Limits::none())
+                .map_err(|e| SnapshotError::XdrParse(format!("LedgerEntry: {e}")))?;
+            entries.insert(wire_entry.key, entry);
+        }
+
+        Ok(Self { entries })
+    }
+
+    /// Returns the number of entries in the snapshot.
     pub fn len(&self) -> usize {
         let mut count = self.base.len();
         for (key, val) in &self.delta {
@@ -247,9 +303,24 @@ pub enum SnapshotError {
     #[error("Failed to encode XDR: {0}")]
     XdrEncoding(String),
 
+    #[error("Failed to encode binary snapshot: {0}")]
+    BinaryEncoding(String),
+
+    #[error("Failed to decode binary snapshot: {0}")]
+    BinaryDecoding(String),
+
+    #[error("Unsupported snapshot format version: {0}")]
+    UnsupportedVersion(u8),
+
     #[error("Storage operation failed: {0}")]
     #[allow(dead_code)]
     StorageError(String),
+}
+
+fn snapshot_bincode_options() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_big_endian()
 }
 
 /// Decodes a base64-encoded LedgerKey XDR string.
@@ -408,6 +479,36 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             SnapshotError::Base64Decode(_)
+        ));
+    }
+
+    #[test]
+    fn test_snapshot_binary_round_trip() {
+        let mut snapshot = LedgerSnapshot::new();
+        let key = vec![4, 3, 2, 1];
+        let entry = create_dummy_ledger_entry();
+        snapshot.insert(key.clone(), entry);
+
+        let bytes = snapshot.to_bytes().expect("Failed to serialize snapshot");
+        let restored = LedgerSnapshot::from_bytes(&bytes).expect("Failed to deserialize snapshot");
+
+        assert_eq!(restored.len(), 1);
+        assert!(restored.get(&key).is_some());
+    }
+
+    #[test]
+    fn test_snapshot_binary_rejects_unknown_version() {
+        let bytes = snapshot_bincode_options()
+            .serialize(&SnapshotWireFormat {
+                version: SNAPSHOT_FORMAT_VERSION + 1,
+                entries: Vec::new(),
+            })
+            .expect("Failed to build test payload");
+
+        let result = LedgerSnapshot::from_bytes(&bytes);
+        assert!(matches!(
+            result.unwrap_err(),
+            SnapshotError::UnsupportedVersion(_)
         ));
     }
 

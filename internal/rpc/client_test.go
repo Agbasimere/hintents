@@ -441,3 +441,35 @@ func TestWithRequestTimeout_RespectsContextDeadline(t *testing.T) {
 		t.Error("expected timeout error, got nil")
 	}
 }
+func TestWithHTTPClient_Injection(t *testing.T) {
+	mockClient := &mockHTTPClient{
+		DoFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"status":"healthy"}}`)),
+			}, nil
+		},
+	}
+
+	client, err := NewClient(
+		WithHTTPClient(mockClient),
+		WithSorobanURL("https://example.com"),
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, mockClient, client.httpClient)
+
+	ctx := context.Background()
+	_, err = client.GetHealth(ctx)
+	assert.NoError(t, err)
+	assert.True(t, mockClient.called)
+}
+
+type mockHTTPClient struct {
+	DoFunc func(req *http.Request) (*http.Response, error)
+	called bool
+}
+
+func (m *mockHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	m.called = true
+	return m.DoFunc(req)
+}
