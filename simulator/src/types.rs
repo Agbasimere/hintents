@@ -14,6 +14,14 @@ pub struct SimulationRequest {
     pub envelope_xdr: String,
     pub result_meta_xdr: String,
     pub ledger_entries: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub control_command: Option<String>,
+    #[serde(default)]
+    pub rewind_step: Option<u32>,
+    #[serde(default)]
+    pub fork_params: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub harness_reset: bool,
     /// Zstd-compressed, base64-encoded ledger_entries produced by the Go bridge.
     /// When present, takes precedence over the plain `ledger_entries` field.
     #[serde(default)]
@@ -57,6 +65,13 @@ pub struct ResourceCalibration {
     pub ed25519_fixed: u64,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SnapshotMetadata {
+    pub id: String,
+    pub gas_consumed: u64,
+    pub call_stack_depth: u32,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SimulationResponse {
     pub status: String,
@@ -91,7 +106,15 @@ pub struct DiagnosticEvent {
     pub data: String,
     pub in_successful_contract_call: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_metadata: Option<SnapshotMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wasm_instruction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]

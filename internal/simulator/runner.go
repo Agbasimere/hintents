@@ -250,6 +250,19 @@ func (r *Runner) Run(ctx context.Context, req *SimulationRequest) (*SimulationRe
 		return nil, errors.WrapMarshalFailed(err)
 	}
 
+	if req.ControlCommand == bridge.CommandRollbackAndResume {
+		rewindStep := 0
+		if req.RewindStep != nil {
+			rewindStep = *req.RewindStep
+		}
+
+		inputBytes, err = bridge.WithRollbackAndResume(inputBytes, rewindStep, req.ForkParams, req.HarnessReset)
+		if err != nil {
+			logger.Logger.Error("Failed to apply rollback-and-resume bridge command", "error", err)
+			return nil, errors.WrapMarshalFailed(err)
+		}
+	}
+
 	inputBytes, err = bridge.CompressRequest(inputBytes)
 	if err != nil {
 		logger.Logger.Error("Failed to compress simulation request", "error", err)

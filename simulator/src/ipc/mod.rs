@@ -37,6 +37,13 @@ pub struct StreamFrame {
     pub data: serde_json::Value,
 }
 
+/// Control commands accepted from the Go bridge in SimulationRequest payloads.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BridgeControlCommand {
+    RollbackAndResume,
+}
+
 impl StreamFrame {
     /// Serialise this frame to a single JSON line on stdout.
     ///

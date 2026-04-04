@@ -42,7 +42,7 @@ func TestInteractiveViewer_HelpContents(t *testing.T) {
 		t.Errorf("help output missing header: %s", out)
 	}
 	// check for required keywords referenced by issue
-	for _, want := range []string{"expand", "search", "jump", "toggle"} {
+	for _, want := range []string{"expand", "search", "jump", "toggle", "replay"} {
 		if !strings.Contains(strings.ToLower(out), want) {
 			t.Errorf("help output should mention %q, got: %s", want, out)
 		}
@@ -157,5 +157,47 @@ func TestInteractiveViewer_SnapshotIDForStep(t *testing.T) {
 	}
 	if got := viewer.snapshotIDForStep(3); got != "snap-001@2" {
 		t.Fatalf("snapshotIDForStep(3) = %q, want snap-001@2", got)
+	}
+}
+
+func TestInteractiveViewer_ReplayForkUpdatesTrace(t *testing.T) {
+	trace := NewExecutionTrace("tx", 1)
+	trace.AddState(ExecutionState{
+		Operation: "init",
+		HostState: map[string]interface{}{"seed": "orig"},
+	})
+	trace.AddState(ExecutionState{
+		Operation: "step-one",
+		HostState: map[string]interface{}{"counter": 1},
+	})
+	trace.AddState(ExecutionState{
+		Operation: "step-two",
+		HostState: map[string]interface{}{"counter": 2},
+	})
+
+	viewer := NewInteractiveViewer(trace)
+
+	out := captureOutput(func() {
+		exit := viewer.handleCommand("r seed=forked")
+		if exit {
+			t.Fatal("replay command should not signal exit")
+		}
+	})
+
+	if !strings.Contains(out, "ROLLBACK_AND_RESUME") {
+		t.Fatalf("replay output should mention rollback-and-resume command, got: %s", out)
+	}
+
+	if !viewer.forked {
+		t.Fatal("expected viewer to mark forked trace")
+	}
+
+	reconstructed, err := trace.ReconstructStateAt(2)
+	if err != nil {
+		t.Fatalf("ReconstructStateAt failed: %v", err)
+	}
+
+	if reconstructed.HostState["seed"] != "forked" {
+		t.Fatalf("expected fork override to persist, got %v", reconstructed.HostState["seed"])
 	}
 }

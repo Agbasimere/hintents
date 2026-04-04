@@ -261,7 +261,64 @@ graph TD
     Client -->|JSON-RPC| RPCAPI["Stellar RPC API<br/>(Future Enhancement)"]
 ```
 
-### 1.1 TypeScript RPC Client (Protocol V2)
+### 1.1 Go RPC Client — Protocol V2 Standardization
+
+The following changes were made as part of issue #540 to align the Go RPC client
+with the upcoming Protocol V2 specifications and clean up structural inconsistencies.
+
+#### Shared Retry Logic (`internal/rpc/retry.go`)
+
+`Retrier` and `RetryTransport` previously duplicated four methods
+(`shouldRetry`, `getRetryAfter`, `nextBackoff`, `waitWithContext`) with no shared
+implementation.  The two copies had already started to drift.
+
+**Fix:** a `retryLogic` struct holds the shared behavior; both types embed it.
+Method promotion makes the public API identical to before while eliminating
+~100 lines of duplicated code.
+
+```
+retryLogic          ← single source of truth for backoff/jitter/shouldRetry
+  ↑           ↑
+Retrier   RetryTransport
+```
+
+#### Middleware Transport Chain (`internal/rpc/client.go` — `createHTTPClient`)
+
+The previous implementation looped over the middleware slice **twice** — once
+before `NewRetryTransport` and once after — causing every middleware to intercept
+each request twice.
+
+**Fix:** middlewares are applied **once**, outermost around `RetryTransport`.
+Each middleware now sees only the final resolved response (after all retry
+attempts), which is the standard behavior described in the SDK middleware docs.
+
+```
+DefaultTransport → [authTransport] → RetryTransport → mw[0] → … → mw[n-1]
+```
+
+#### URL Failover Consistency (`internal/rpc/client.go` — `rotateURL`)
+
+`rotateURL` contained two dead `SorobanURL` assignments (one conditional, one
+unconditional) that were both overwritten by a third assignment at the end of
+the function.
+
+**Fix:** the dead assignments are removed.  `SorobanURL` is set exactly once to
+`AltURLs[currIndex]`, the same value as `HorizonURL`, preserving the invariant
+that both URLs always point to the same active failover node.
+
+#### Ledger Entry Verification (`internal/rpc/verification.go`)
+
+`VerifyLedgerEntries` called `VerifyLedgerEntryHash(key, key)` — passing the
+same value as both arguments.  This made the key-equality branch permanently
+unreachable and obscured the function's intent.
+
+**Fix:** a private `validateLedgerKeyXDR` helper encapsulates the base64 decode
+→ XDR unmarshal → SHA-256 log pipeline.  `VerifyLedgerEntryHash` calls it after
+the equality check.  `VerifyLedgerEntries` calls it directly; the presence check
+(`returnedEntries[requestedKey]`) already guarantees key equality so a
+self-comparison is not needed.
+
+### 1.2 TypeScript RPC Client (Protocol V2)
 
 **Location:** `src/rpc/`
 

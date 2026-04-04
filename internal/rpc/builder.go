@@ -24,7 +24,7 @@ type clientBuilder struct {
 	cacheEnabled    bool
 	methodTelemetry MethodTelemetry
 	config          *NetworkConfig
-	httpClient      *http.Client
+	httpClient      HTTPClient
 	requestTimeout  time.Duration
 	middlewares     []Middleware
 	loggingEnabled  bool
@@ -128,7 +128,7 @@ func WithRequestTimeout(d time.Duration) ClientOption {
 	}
 }
 
-func WithHTTPClient(client *http.Client) ClientOption {
+func WithHTTPClient(client HTTPClient) ClientOption {
 	return func(b *clientBuilder) error {
 		b.httpClient = client
 		return nil
@@ -275,5 +275,6 @@ func (b *clientBuilder) build() (*Client, error) {
 		failures:        make(map[string]int),
 		lastFailure:     make(map[string]time.Time),
 		middlewares:     b.middlewares,
+		healthCollector: NewHealthCollector(),
 	}, nil
 }
